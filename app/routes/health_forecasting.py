@@ -1,14 +1,12 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-from sqlalchemy.orm import Session
-from sqlalchemy import text, func
 import logging
 from collections import defaultdict, Counter
 
-from ..services.supabase import get_db
+from ..services.supabase import supabase
 from ..models.schemas import (
     ForecastRequest, 
     ForecastResponse, 
@@ -18,17 +16,13 @@ from ..models.schemas import (
 )
 from ..models.preprocess import DataPreprocessor
 from ..models.sarima import SARIMAForecaster
-from ..utils.logging_config import get_logger
 
 router = APIRouter(prefix="/forecast", tags=["health-forecasting"])
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # Disease Trends Forecasting
 @router.post("/disease-trends")
-async def forecast_disease_trends(
-    request: HealthTrendRequest,
-    db: Session = Depends(get_db)
-):
+async def forecast_disease_trends(request: HealthTrendRequest):
     """
     Forecast disease trends based on historical medical records
     Analyzes chief complaints, diagnoses, and seasonal patterns
@@ -36,31 +30,19 @@ async def forecast_disease_trends(
     try:
         logger.info(f"Starting disease trends forecast for period: {request.forecast_period} days")
         
-        # Query medical records for disease trend analysis
-        query = text("""
-            SELECT 
-                mr.visit_date,
-                mr.chief_complaint,
-                mr.management,
-                mr.medication,
-                EXTRACT(MONTH FROM mr.visit_date) as month,
-                EXTRACT(WEEK FROM mr.visit_date) as week,
-                EXTRACT(DOW FROM mr.visit_date) as day_of_week,
-                COUNT(*) OVER (PARTITION BY DATE(mr.visit_date)) as daily_visits
-            FROM medical_records mr
-            WHERE mr.visit_date >= CURRENT_DATE - INTERVAL '2 years'
-                AND mr.chief_complaint IS NOT NULL
-            ORDER BY mr.visit_date DESC
-        """)
+        # Calculate date 2 years ago
+        two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
         
-        result = db.execute(query)
-        records = result.fetchall()
+        # Query medical records for disease trend analysis using Supabase
+        medical_data = supabase.table("medical_records").select(
+            "visit_date, chief_complaint, management, medication"
+        ).gte("visit_date", two_years_ago).not_.is_("chief_complaint", "null").order("visit_date", desc=True).execute()
         
-        if not records:
+        if not medical_data.data:
             raise HTTPException(status_code=404, detail="No medical records found for disease trend analysis")
         
         # Convert to DataFrame for analysis
-        df = pd.DataFrame([dict(row._mapping) for row in records])
+        df = pd.DataFrame(medical_data.data)
         df['visit_date'] = pd.to_datetime(df['visit_date'])
         
         # Analyze disease patterns
@@ -121,7 +103,7 @@ async def forecast_disease_trends(
             recommendations=recommendations,
             model_info={
                 "model_type": "Disease Trend Analysis",
-                "data_points": len(records),
+                "data_points": len(medical_data.data),
                 "accuracy": "85%",
                 "last_updated": datetime.now().isoformat()
             }
@@ -136,40 +118,43 @@ async def forecast_disease_trends(
 
 # Patient Visits Forecasting
 @router.post("/patient-visits")
-async def forecast_patient_visits(
-    request: PatientVisitRequest,
-    db: Session = Depends(get_db)
-):
+async def forecast_patient_visits(request: PatientVisitRequest):
     """
     Forecast patient visit volumes based on historical appointment and medical record data
     """
     try:
         logger.info(f"Starting patient visits forecast for period: {request.forecast_period} days")
         
-        # Query appointment and visit data
-        query = text("""
-            SELECT 
-                DATE(a.scheduled_date) as visit_date,
-                COUNT(*) as total_appointments,
-                COUNT(CASE WHEN a.status = 'completed' THEN 1 END) as completed_visits,
-                COUNT(CASE WHEN a.status = 'cancelled' THEN 1 END) as cancelled_visits,
-                COUNT(CASE WHEN a.status = 'no_show' THEN 1 END) as no_show_visits,
-                EXTRACT(DOW FROM a.scheduled_date) as day_of_week,
-                EXTRACT(MONTH FROM a.scheduled_date) as month
-            FROM appointments a
-            WHERE a.scheduled_date >= CURRENT_DATE - INTERVAL '1 year'
-            GROUP BY DATE(a.scheduled_date), EXTRACT(DOW FROM a.scheduled_date), EXTRACT(MONTH FROM a.scheduled_date)
-            ORDER BY visit_date DESC
-        """)
+        # Calculate date 1 year ago
+        one_year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
         
-        result = db.execute(query)
-        records = result.fetchall()
+        # Query appointment data using Supabase
+        appointment_data = supabase.table("appointments").select(
+            "scheduled_date, status"
+        ).gte("scheduled_date", one_year_ago).execute()
         
-        if not records:
+        if not appointment_data.data:
             raise HTTPException(status_code=404, detail="No appointment data found for patient visit forecasting")
         
-        # Convert to DataFrame
-        df = pd.DataFrame([dict(row._mapping) for row in records])
+        # Convert to DataFrame and process
+        df = pd.DataFrame(appointment_data.data)
+        df['scheduled_date'] = pd.to_datetime(df['scheduled_date'])
+        
+        # Group by date and calculate statistics
+        daily_stats = []
+        for date, group in df.groupby(df['scheduled_date'].dt.date):
+            stats = {
+                'visit_date': date,
+                'total_appointments': len(group),
+                'completed_visits': len(group[group['status'] == 'completed']),
+                'cancelled_visits': len(group[group['status'] == 'cancelled']),
+                'no_show_visits': len(group[group['status'] == 'no_show']),
+                'day_of_week': date.weekday(),
+                'month': date.month
+            }
+            daily_stats.append(stats)
+        
+        df = pd.DataFrame(daily_stats)
         df['visit_date'] = pd.to_datetime(df['visit_date'])
         
         # Analyze visit patterns
@@ -224,7 +209,7 @@ async def forecast_patient_visits(
             recommendations=recommendations,
             model_info={
                 "model_type": "Patient Visit Forecasting",
-                "data_points": len(records),
+                "data_points": len(appointment_data.data),
                 "accuracy": "88%",
                 "last_updated": datetime.now().isoformat()
             }
@@ -239,10 +224,7 @@ async def forecast_patient_visits(
 
 # Health Patterns Forecasting
 @router.post("/health-patterns")
-async def forecast_health_patterns(
-    request: HealthPatternRequest,
-    db: Session = Depends(get_db)
-):
+async def forecast_health_patterns(request: HealthPatternRequest):
     """
     Analyze and forecast general health patterns including demographics, 
     treatment outcomes, and resource utilization
@@ -250,41 +232,43 @@ async def forecast_health_patterns(
     try:
         logger.info(f"Starting health patterns analysis for period: {request.forecast_period} days")
         
-        # Query comprehensive health data
-        query = text("""
-            SELECT 
-                mr.visit_date,
-                mr.chief_complaint,
-                mr.management,
-                mr.medication,
-                p.age,
-                p.sex,
-                mp.medicine_id,
-                mp.quantity_prescribed,
-                mp.status as prescription_status,
-                EXTRACT(MONTH FROM mr.visit_date) as month,
-                EXTRACT(WEEK FROM mr.visit_date) as week
-            FROM medical_records mr
-            LEFT JOIN patients p ON mr.patient_id = p.id
-            LEFT JOIN medicine_prescriptions mp ON mr.id = mp.medical_record_id
-            WHERE mr.visit_date >= CURRENT_DATE - INTERVAL '18 months'
-            ORDER BY mr.visit_date DESC
-        """)
+        # Calculate date 18 months ago
+        eighteen_months_ago = (datetime.now() - timedelta(days=545)).strftime('%Y-%m-%d')
         
-        result = db.execute(query)
-        records = result.fetchall()
+        # Query medical records with patient data using Supabase
+        medical_response = supabase.table("medical_records").select(
+            "visit_date, chief_complaint, management, medication, patient_id"
+        ).gte("visit_date", eighteen_months_ago).execute()
         
-        if not records:
+        if not medical_response.data:
             raise HTTPException(status_code=404, detail="No health data found for pattern analysis")
         
-        # Convert to DataFrame
-        df = pd.DataFrame([dict(row._mapping) for row in records])
+        # Get patient demographics
+        patient_response = supabase.table("patients").select("id, age, sex").execute()
+        patient_df = pd.DataFrame(patient_response.data) if patient_response.data else pd.DataFrame()
+        
+        # Get prescription data
+        prescription_response = supabase.table("medicine_prescriptions").select(
+            "medical_record_id, medicine_id, quantity_prescribed, status"
+        ).execute()
+        prescription_df = pd.DataFrame(prescription_response.data) if prescription_response.data else pd.DataFrame()
+        
+        # Convert to DataFrame and merge data
+        df = pd.DataFrame(medical_response.data)
         df['visit_date'] = pd.to_datetime(df['visit_date'])
         
+        # Merge with patient demographics if available
+        if not patient_df.empty:
+            df = df.merge(patient_df, left_on='patient_id', right_on='id', how='left', suffixes=('', '_patient'))
+        
+        # Merge with prescription data if available
+        if not prescription_df.empty:
+            df = df.merge(prescription_df, left_on='id', right_on='medical_record_id', how='left', suffixes=('', '_prescription'))
+        
         # Analyze health patterns
-        demographic_patterns = analyze_demographic_patterns(df)
+        demographic_patterns = analyze_demographic_patterns(df, patient_df)
         treatment_patterns = analyze_treatment_patterns(df)
-        resource_utilization = analyze_resource_utilization(df)
+        resource_utilization = analyze_resource_utilization(df, prescription_df)
         
         # Generate pattern forecasts
         forecast_data = []
@@ -328,13 +312,13 @@ async def forecast_health_patterns(
             recommendations=recommendations,
             model_info={
                 "model_type": "Health Pattern Analysis",
-                "data_points": len(records),
+                "data_points": len(medical_response.data),
                 "accuracy": "82%",
                 "last_updated": datetime.now().isoformat()
             }
         )
         
-        logger.info(f"Health patterns forecast completed. Analyzed {len(records)} health records")
+        logger.info(f"Health patterns forecast completed. Analyzed {len(medical_response.data)} health records")
         return response
         
     except Exception as e:
@@ -528,17 +512,23 @@ def generate_visit_recommendations(patterns: Dict, forecast_data: List) -> List[
     
     return recommendations
 
-def analyze_demographic_patterns(df: pd.DataFrame) -> Dict[str, Any]:
+def analyze_demographic_patterns(df: pd.DataFrame, patient_df: pd.DataFrame) -> Dict[str, Any]:
     """Analyze demographic patterns"""
-    # Age distribution
+    if patient_df.empty:
+        return {
+            'age_distribution': {'pediatric': 0, 'adult': 0, 'elderly': 0},
+            'gender_distribution': {}
+        }
+    
+    # Age distribution from patient data
     age_groups = {
-        'pediatric': len(df[df['age'] < 18]),
-        'adult': len(df[(df['age'] >= 18) & (df['age'] < 65)]),
-        'elderly': len(df[df['age'] >= 65])
+        'pediatric': len(patient_df[patient_df['age'] < 18]) if 'age' in patient_df.columns else 0,
+        'adult': len(patient_df[(patient_df['age'] >= 18) & (patient_df['age'] < 65)]) if 'age' in patient_df.columns else 0,
+        'elderly': len(patient_df[patient_df['age'] >= 65]) if 'age' in patient_df.columns else 0
     }
     
     # Gender distribution
-    gender_dist = df['sex'].value_counts().to_dict() if 'sex' in df.columns else {}
+    gender_dist = patient_df['sex'].value_counts().to_dict() if 'sex' in patient_df.columns else {}
     
     return {
         'age_distribution': age_groups,
@@ -558,10 +548,18 @@ def analyze_treatment_patterns(df: pd.DataFrame) -> Dict[str, Any]:
         'prescription_rate': prescription_rate
     }
 
-def analyze_resource_utilization(df: pd.DataFrame) -> Dict[str, Any]:
+def analyze_resource_utilization(df: pd.DataFrame, prescription_df: pd.DataFrame) -> Dict[str, Any]:
     """Analyze resource utilization patterns"""
-    # Calculate average resources per visit
-    avg_prescriptions_per_visit = df.groupby('visit_date')['medicine_id'].count().mean() if 'medicine_id' in df.columns else 1.5
+    if prescription_df.empty:
+        return {
+            'avg_prescriptions_per_visit': 1.5,
+            'resource_demand_trend': 'stable'
+        }
+    
+    # Calculate average prescriptions per visit
+    total_prescriptions = len(prescription_df)
+    total_visits = len(df)
+    avg_prescriptions_per_visit = total_prescriptions / total_visits if total_visits > 0 else 1.5
     
     return {
         'avg_prescriptions_per_visit': avg_prescriptions_per_visit,

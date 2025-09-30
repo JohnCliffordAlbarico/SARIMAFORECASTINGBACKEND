@@ -94,3 +94,11 @@ def setup_logging():
     logger.info("=" * 50)
     
     return logger
+
+def get_logger(name: str = None):
+    """
+    Get a logger instance for the specified module
+    """
+    if name is None:
+        name = 'app'
+    return logging.getLogger(name)
