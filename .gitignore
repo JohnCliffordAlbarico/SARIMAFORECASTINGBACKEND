@@ -6,6 +6,8 @@ __pycache__/
 # Logs
 logs/
 *.log
+healthguard_*.log
+errors.log
 
 # IDE
 .vscode/
