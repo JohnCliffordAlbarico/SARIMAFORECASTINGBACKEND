@@ -17,8 +17,7 @@ def get_forecast(
     steps: int = Query(6, ge=1, le=100, description="Number of forecast periods"),
     confidence_level: float = Query(0.95, ge=0.5, le=0.99, description="Confidence level"),
     data_source: str = Query("medical_records", description="Data source: medical_records or medicine_stock"),
-    medicine_id: Optional[int] = Query(None, description="Medicine ID for stock forecasting"),
-    dep=Depends(limiter.limit("10/minute"))
+    medicine_id: Optional[int] = Query(None, description="Medicine ID for stock forecasting")
 ):
     """
     Generate time series forecasts using SARIMA model with real database data
@@ -92,8 +91,8 @@ def _get_medical_records_data() -> pd.Series:
             "visit_date, patient_id"
         ).order("visit_date").execute()
         
-        if response.error:
-            raise Exception(f"Database error: {response.error.message}")
+        if not hasattr(response, 'data') or response.data is None:
+            raise Exception("Database connection failed or no data returned")
         
         if not response.data:
             raise Exception("No medical records found in database")
@@ -137,8 +136,8 @@ def _get_medicine_stock_data(medicine_id: Optional[int] = None) -> pd.Series:
                 "id"
             ).eq("medicine_id", medicine_id).execute()
             
-            if inventory_response.error:
-                raise Exception(f"Database error: {inventory_response.error.message}")
+            if not hasattr(inventory_response, 'data') or inventory_response.data is None:
+                raise Exception("Database connection failed for inventory query")
             
             if not inventory_response.data:
                 raise Exception(f"No inventory found for medicine_id {medicine_id}")
@@ -148,8 +147,8 @@ def _get_medicine_stock_data(medicine_id: Optional[int] = None) -> pd.Series:
         
         response = query.order("movement_date").execute()
         
-        if response.error:
-            raise Exception(f"Database error: {response.error.message}")
+        if not hasattr(response, 'data') or response.data is None:
+            raise Exception("Database connection failed for stock movements query")
         
         if not response.data:
             raise Exception("No stock movement data found")
@@ -193,8 +192,7 @@ def _get_medicine_stock_data(medicine_id: Optional[int] = None) -> pd.Series:
 
 @router.get("/diagnostics")
 def get_model_diagnostics(
-    data_source: str = Query("medical_records", description="Data source to analyze"),
-    dep=Depends(limiter.limit("5/minute"))
+    data_source: str = Query("medical_records", description="Data source to analyze")
 ):
     """
     Get model diagnostics and data quality metrics

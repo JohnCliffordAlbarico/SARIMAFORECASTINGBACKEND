@@ -16,8 +16,7 @@ def get_medical_records(
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     start_date: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD)"),
-    patient_id: Optional[int] = Query(None, description="Filter by specific patient ID"),
-    dep=Depends(limiter.limit("30/second"))
+    patient_id: Optional[int] = Query(None, description="Filter by specific patient ID")
 ):
     """
     Retrieve medical records with filtering and pagination
@@ -58,13 +57,13 @@ def get_medical_records(
         # Apply pagination and ordering
         response = query.order("visit_date", desc=True).range(offset, offset + limit - 1).execute()
         
-        if response.error:
-            logger.error(f"Database error: {response.error.message}")
-            raise HTTPException(status_code=500, detail=f"Database error: {response.error.message}")
+        if not hasattr(response, 'data') or response.data is None:
+            logger.error("Database connection failed for medical records")
+            raise HTTPException(status_code=500, detail="Database connection failed")
         
         # Get total count for pagination info
         count_response = supabase.table("medical_records").select("id", count="exact").execute()
-        total_records = count_response.count if count_response.count else 0
+        total_records = count_response.count if hasattr(count_response, 'count') and count_response.count else 0
         
         # Calculate date range of returned data
         date_range = None
@@ -93,8 +92,7 @@ def get_medical_records(
 
 @router.get("/summary")
 def get_medical_records_summary(
-    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
-    dep=Depends(limiter.limit("10/minute"))
+    days: int = Query(30, ge=1, le=365, description="Number of days to analyze")
 ):
     """
     Get summary statistics for medical records
@@ -111,8 +109,8 @@ def get_medical_records_summary(
             "visit_date", end_date.strftime("%Y-%m-%d")
         ).execute()
         
-        if response.error:
-            raise HTTPException(status_code=500, detail=response.error.message)
+        if not hasattr(response, 'data') or response.data is None:
+            raise HTTPException(status_code=500, detail="Database connection failed")
         
         records = response.data
         

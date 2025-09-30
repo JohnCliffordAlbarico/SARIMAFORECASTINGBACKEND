@@ -14,8 +14,7 @@ def get_medicine_stock_data(
     medicine_id: Optional[int] = Query(None, description="Filter by specific medicine ID"),
     include_expired: bool = Query(False, description="Include expired medicines"),
     low_stock_only: bool = Query(False, description="Show only low stock items"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records"),
-    dep=Depends(limiter.limit("30/second"))
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records")
 ):
     """
     Retrieve medicine stock data with filtering options
@@ -35,9 +34,9 @@ def get_medicine_stock_data(
         
         inventory_response = inventory_query.limit(limit).execute()
         
-        if inventory_response.error:
-            logger.error(f"Inventory query error: {inventory_response.error.message}")
-            raise HTTPException(status_code=500, detail=inventory_response.error.message)
+        if not hasattr(inventory_response, 'data') or inventory_response.data is None:
+            logger.error("Database connection failed for inventory query")
+            raise HTTPException(status_code=500, detail="Database connection failed")
 
         inventory_data = inventory_response.data
         
@@ -58,9 +57,9 @@ def get_medicine_stock_data(
         
         prescriptions_response = prescriptions_query.limit(limit).execute()
         
-        if prescriptions_response.error:
-            logger.error(f"Prescriptions query error: {prescriptions_response.error.message}")
-            raise HTTPException(status_code=500, detail=prescriptions_response.error.message)
+        if not hasattr(prescriptions_response, 'data') or prescriptions_response.data is None:
+            logger.error("Database connection failed for prescriptions query")
+            raise HTTPException(status_code=500, detail="Database connection failed")
 
         # Get stock movements data
         movements_query = supabase.table("medicine_stock_movements").select(
@@ -74,9 +73,9 @@ def get_medicine_stock_data(
         
         movements_response = movements_query.order("movement_date", desc=True).limit(limit).execute()
         
-        if movements_response.error:
-            logger.error(f"Movements query error: {movements_response.error.message}")
-            raise HTTPException(status_code=500, detail=movements_response.error.message)
+        if not hasattr(movements_response, 'data') or movements_response.data is None:
+            logger.error("Database connection failed for movements query")
+            raise HTTPException(status_code=500, detail="Database connection failed")
 
         # Calculate summary statistics
         summary = _calculate_stock_summary(inventory_data, prescriptions_response.data, movements_response.data)
@@ -187,8 +186,7 @@ def _calculate_stock_summary(inventory_data, prescriptions_data, movements_data)
 
 @router.get("/alerts")
 def get_stock_alerts(
-    severity: Optional[str] = Query(None, description="Filter by severity: info, warning, critical"),
-    dep=Depends(limiter.limit("20/minute"))
+    severity: Optional[str] = Query(None, description="Filter by severity: info, warning, critical")
 ):
     """
     Get stock alerts and recommendations
@@ -199,8 +197,8 @@ def get_stock_alerts(
             "id, medicine_id, current_stock, minimum_stock_level, maximum_stock_level, expiry_date"
         ).execute()
         
-        if inventory_response.error:
-            raise HTTPException(status_code=500, detail=inventory_response.error.message)
+        if not hasattr(inventory_response, 'data') or inventory_response.data is None:
+            raise HTTPException(status_code=500, detail="Database connection failed")
         
         inventory_data = inventory_response.data
         current_date = datetime.now()
