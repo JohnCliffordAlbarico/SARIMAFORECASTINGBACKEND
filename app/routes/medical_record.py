@@ -5,9 +5,7 @@ from app.utils.middleware import limiter
 
 router = APIRouter()
 
-# ----------------------------
-# 1️⃣ Medical Record Forecasting Data
-# ----------------------------
+
 @router.get("/")
 def get_medical_records(dep=Depends(limiter.limit("30/second"))):
     try:
