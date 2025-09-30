@@ -116,7 +116,7 @@ def get_users(request: Request):
 app.include_router(forecast.router, prefix="/api/forecast", tags=["Forecasting"])
 app.include_router(medical_record.router, prefix="/api/medical_record", tags=["Medical Records"])
 app.include_router(medicine_stock.router, prefix="/api/medicine_stock", tags=["Medicine Stock"])
-app.include_router(health_forecasting.router, prefix="/api", tags=["Health Forecasting"])
+app.include_router(health_forecasting.router, prefix="/api/health", tags=["Health Forecasting"])
 
 # Startup event
 @app.on_event("startup")
@@ -130,9 +130,9 @@ async def startup_event():
     logger.info("  - GET /api/medical_record/summary (Records Summary)")
     logger.info("  - GET /api/medicine_stock/ (Stock Data)")
     logger.info("  - GET /api/medicine_stock/alerts (Stock Alerts)")
-    logger.info("  - POST /api/forecast/disease-trends (Disease Trends Forecasting)")
-    logger.info("  - POST /api/forecast/patient-visits (Patient Visit Forecasting)")
-    logger.info("  - POST /api/forecast/health-patterns (Health Pattern Analysis)")
+    logger.info("  - POST /api/health/forecast/disease-trends (Disease Trends Forecasting)")
+    logger.info("  - POST /api/health/forecast/patient-visits (Patient Visit Forecasting)")
+    logger.info("  - POST /api/health/forecast/health-patterns (Health Pattern Analysis)")
 
 # Shutdown event
 @app.on_event("shutdown")
