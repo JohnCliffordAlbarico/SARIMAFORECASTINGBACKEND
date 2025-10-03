@@ -113,6 +113,34 @@ async def get_quick_insights(
         logger.error(f"Quick insights generation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Insights generation failed: {str(e)}")
 
+@router.get("/disease-categories")
+async def get_enhanced_disease_categories():
+    """Get all available enhanced disease categories with medical taxonomy"""
+    
+    from ..services.disease_classifier import disease_classifier
+    
+    categories = disease_classifier.get_all_categories()
+    
+    return {
+        "enhanced_categories": categories,
+        "category_count": len(categories),
+        "features": [
+            "ICD-10 inspired classification",
+            "Severity level detection",
+            "Age group correlation",
+            "Seasonal pattern recognition",
+            "Contagious disease identification",
+            "Chronic condition tracking"
+        ],
+        "improvements_over_legacy": {
+            "categories": f"{len(categories)} vs 5 legacy categories",
+            "accuracy": "Medical taxonomy-based classification",
+            "metadata": "Rich disease metadata including seasonality and demographics",
+            "severity": "Automatic severity level detection",
+            "confidence": "Classification confidence scoring"
+        }
+    }
+
 @router.get("/forecast-types")
 async def get_available_forecast_types():
     """Get all available forecast types with descriptions"""

@@ -7,6 +7,7 @@ import logging
 from enum import Enum
 
 from .supabase import supabase
+from .disease_classifier import disease_classifier
 from ..models.schemas import TimeAggregation, HistoricalPeriod
 
 logger = logging.getLogger(__name__)
@@ -74,9 +75,9 @@ class DataAggregationService:
                                           time_aggregation: TimeAggregation,
                                           historical_period: HistoricalPeriod,
                                           disease_category: Optional[str] = None) -> pd.DataFrame:
-        """Get aggregated disease trends data"""
+        """Get aggregated disease trends data with enhanced classification"""
         
-        cache_key = f"disease_trends_{time_aggregation.value}_{historical_period.value}_{disease_category}"
+        cache_key = f"disease_trends_enhanced_{time_aggregation.value}_{historical_period.value}_{disease_category}"
         
         if self._is_cache_valid(cache_key):
             return self.cache[cache_key]['data']
@@ -84,30 +85,54 @@ class DataAggregationService:
         try:
             cutoff_date = self._get_cutoff_date(historical_period)
             
-            # Query medical records with disease information
+            # Query medical records with disease information and patient data
             response = supabase.table("medical_records").select(
-                "visit_date, chief_complaint, management"
+                "visit_date, chief_complaint, management, patients!inner(date_of_birth)"
             ).gte("visit_date", cutoff_date).not_.is_("chief_complaint", "null").order("visit_date").execute()
             
             if not response.data:
-                return pd.DataFrame(columns=['date', 'volume'])
+                return pd.DataFrame(columns=['date', 'volume', 'category_breakdown'])
             
             df = pd.DataFrame(response.data)
             df['visit_date'] = pd.to_datetime(df['visit_date'])
             
+            # Calculate patient ages
+            df['patient_age'] = df.apply(
+                lambda row: self._calculate_age(row.get('patients', {}).get('date_of_birth')) 
+                if row.get('patients') else None, axis=1
+            )
+            
+            # Enhanced disease classification
+            df['disease_classification'] = df.apply(
+                lambda row: disease_classifier.classify_disease(
+                    chief_complaint=row['chief_complaint'],
+                    management=row.get('management', ''),
+                    patient_age=row.get('patient_age')
+                ), axis=1
+            )
+            
+            # Extract classification details
+            df['category_code'] = df['disease_classification'].apply(lambda x: x['category_code'])
+            df['category_name'] = df['disease_classification'].apply(lambda x: x['category_name'])
+            df['severity'] = df['disease_classification'].apply(lambda x: x['severity'])
+            df['confidence'] = df['disease_classification'].apply(lambda x: x['confidence'])
+            df['seasonal_pattern'] = df['disease_classification'].apply(
+                lambda x: x['metadata']['seasonal_pattern']
+            )
+            
             # Filter by disease category if specified
             if disease_category:
-                df = self._filter_by_disease_category(df, disease_category)
+                df = self._filter_by_enhanced_category(df, disease_category)
             
-            # Aggregate
-            aggregated_df = self._aggregate_by_time_period(df, 'visit_date', time_aggregation)
+            # Aggregate with enhanced metadata
+            aggregated_df = self._aggregate_disease_trends_enhanced(df, time_aggregation)
             
             self._cache_data(cache_key, aggregated_df)
             return aggregated_df
             
         except Exception as e:
-            logger.error(f"Error aggregating disease trends data: {str(e)}")
-            return pd.DataFrame(columns=['date', 'volume'])
+            logger.error(f"Error aggregating enhanced disease trends data: {str(e)}")
+            return pd.DataFrame(columns=['date', 'volume', 'category_breakdown'])
     
     async def get_aggregated_medicine_demand(self,
                                            time_aggregation: TimeAggregation,
@@ -326,7 +351,7 @@ class DataAggregationService:
         return result_df
     
     def _filter_by_disease_category(self, df: pd.DataFrame, category: str) -> pd.DataFrame:
-        """Filter medical records by disease category"""
+        """Filter medical records by disease category (legacy method)"""
         
         disease_keywords = {
             'respiratory': ['cough', 'fever', 'cold', 'flu', 'pneumonia', 'asthma', 'bronchitis', 'respiratory'],
@@ -353,6 +378,100 @@ class DataAggregationService:
         )
         
         return df[mask]
+    
+    def _filter_by_enhanced_category(self, df: pd.DataFrame, category: str) -> pd.DataFrame:
+        """Filter medical records by enhanced disease category"""
+        
+        # Map legacy categories to new category codes
+        category_mapping = {
+            'respiratory': ['RESP_UPPER', 'RESP_LOWER'],
+            'gastrointestinal': ['GI_ACUTE', 'GI_CHRONIC'],
+            'infectious': ['INF_VIRAL', 'INF_BACTERIAL'],
+            'chronic': ['GI_CHRONIC', 'CARDIO', 'ENDO_META', 'MSK_CHRONIC'],
+            'musculoskeletal': ['MSK_ACUTE', 'MSK_CHRONIC'],
+            'cardiovascular': ['CARDIO'],
+            'neurological': ['NEURO'],
+            'dermatological': ['DERM'],
+            'mental_health': ['MENTAL'],
+            'pediatric': ['PEDIATRIC'],
+            'reproductive': ['REPRO']
+        }
+        
+        # Get category codes for filtering
+        target_codes = category_mapping.get(category.lower(), [category.upper()])
+        
+        # Filter by category code
+        if 'category_code' in df.columns:
+            return df[df['category_code'].isin(target_codes)]
+        else:
+            # Fallback to legacy filtering
+            return self._filter_by_disease_category(df, category)
+    
+    def _calculate_age(self, date_of_birth: str) -> Optional[int]:
+        """Calculate age from date of birth"""
+        
+        if not date_of_birth:
+            return None
+        
+        try:
+            birth_date = pd.to_datetime(date_of_birth)
+            today = pd.Timestamp.now()
+            age = (today - birth_date).days // 365
+            return max(0, age)  # Ensure non-negative age
+        except Exception:
+            return None
+    
+    def _aggregate_disease_trends_enhanced(self, df: pd.DataFrame, 
+                                         time_aggregation: TimeAggregation) -> pd.DataFrame:
+        """Aggregate disease trends with enhanced metadata"""
+        
+        # Basic time aggregation
+        aggregated_df = self._aggregate_by_time_period(df, 'visit_date', time_aggregation)
+        
+        # Add category breakdown for each time period
+        if not df.empty and 'category_code' in df.columns:
+            # Group by date and category
+            freq_map = {
+                TimeAggregation.DAILY: 'D',
+                TimeAggregation.WEEKLY: 'W',
+                TimeAggregation.MONTHLY: 'M',
+                TimeAggregation.QUARTERLY: 'Q',
+                TimeAggregation.YEARLY: 'Y'
+            }
+            
+            freq = freq_map.get(time_aggregation, 'D')
+            df_grouped = df.set_index('visit_date').groupby([
+                pd.Grouper(freq=freq), 'category_code'
+            ]).agg({
+                'severity': lambda x: x.mode().iloc[0] if not x.empty else 'mild',
+                'confidence': 'mean',
+                'seasonal_pattern': lambda x: x.mode().iloc[0] if not x.empty else 'no_pattern'
+            }).reset_index()
+            
+            # Create category breakdown for each date
+            category_breakdown = df_grouped.groupby('visit_date').apply(
+                lambda group: {
+                    'categories': group['category_code'].tolist(),
+                    'avg_confidence': group['confidence'].mean(),
+                    'dominant_severity': group['severity'].mode().iloc[0] if not group.empty else 'mild',
+                    'seasonal_patterns': group['seasonal_pattern'].unique().tolist()
+                }
+            ).to_dict()
+            
+            # Merge with aggregated data
+            aggregated_df['category_breakdown'] = aggregated_df['date'].map(
+                lambda x: category_breakdown.get(pd.Timestamp(x), {
+                    'categories': [],
+                    'avg_confidence': 0.0,
+                    'dominant_severity': 'mild',
+                    'seasonal_patterns': []
+                })
+            )
+        else:
+            # Add empty breakdown if no classification data
+            aggregated_df['category_breakdown'] = [{}] * len(aggregated_df)
+        
+        return aggregated_df
     
     def _is_cache_valid(self, cache_key: str) -> bool:
         """Check if cached data is still valid"""
