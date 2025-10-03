@@ -118,6 +118,10 @@ app.include_router(medical_record.router, prefix="/api/medical_record", tags=["M
 app.include_router(medicine_stock.router, prefix="/api/medicine_stock", tags=["Medicine Stock"])
 app.include_router(health_forecasting.router, prefix="/api/health", tags=["Health Forecasting"])
 
+# New Comprehensive Forecasting Routes
+from app.routes import comprehensive_forecasting
+app.include_router(comprehensive_forecasting.router, prefix="/api/forecasting", tags=["Comprehensive Forecasting"])
+
 # Startup event
 @app.on_event("startup")
 async def startup_event():
@@ -133,6 +137,9 @@ async def startup_event():
     logger.info("  - POST /api/health/forecast/disease-trends (Disease Trends Forecasting)")
     logger.info("  - POST /api/health/forecast/patient-visits (Patient Visit Forecasting)")
     logger.info("  - POST /api/health/forecast/health-patterns (Health Pattern Analysis)")
+    logger.info("  - POST /api/forecasting/comprehensive/forecast (Comprehensive Forecasting)")
+    logger.info("  - GET /api/forecasting/comprehensive/quick-insights (Quick Insights)")
+    logger.info("  - GET /api/forecasting/comprehensive/forecast-types (Available Forecast Types)")
 
 # Shutdown event
 @app.on_event("shutdown")
