@@ -68,6 +68,7 @@ async def generate_comprehensive_forecast(request: ComprehensiveForecastRequest)
             department_filter=request.department_filter,
             medicine_category=request.medicine_category,
             disease_category=request.disease_category,
+            taxonomy_filter=request.taxonomy_filter,
             patient_demographics=request.patient_demographics
         )
         

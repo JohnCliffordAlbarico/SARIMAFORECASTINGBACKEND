@@ -32,6 +32,8 @@ class SARIMAForecastingEngine:
                                       historical_period: HistoricalPeriod,
                                       forecast_horizon: int,
                                       confidence_level: float = 0.95,
+                                      disease_category: Optional[str] = None,
+                                      taxonomy_filter: Optional[str] = None,
                                       **kwargs) -> ComprehensiveForecastResponse:
         """
         Generate comprehensive SARIMA forecast with advanced analytics

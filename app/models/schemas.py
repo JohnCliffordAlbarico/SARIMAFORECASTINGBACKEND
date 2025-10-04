@@ -130,6 +130,7 @@ class ComprehensiveForecastRequest(BaseModel):
     department_filter: Optional[str] = Field(None, description="Filter by department")
     medicine_category: Optional[str] = Field(None, description="Filter by medicine category")
     disease_category: Optional[str] = Field(None, description="Filter by disease category")
+    taxonomy_filter: Optional[str] = Field(None, description="Filter by disease taxonomy category")
     patient_demographics: Optional[Dict[str, Any]] = Field(None, description="Patient demographic filters")
     
     # Advanced options
