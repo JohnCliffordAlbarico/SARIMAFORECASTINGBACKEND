@@ -222,11 +222,15 @@ class SARIMAForecastingEngine:
             # Revenue typically has monthly patterns
             default_params['seasonal_order'] = (1, 1, 1, 30)
         
-        # Adjust based on data length
-        if len(data) < 50:
-            # Use simpler model for short series
+        # Adjust based on data length to prevent overfitting
+        if len(data) < 30:
+            # Very simple model for very short series - prevent oscillation
+            default_params['order'] = (0, 1, 0)  # Random walk - no oscillation
+            default_params['seasonal_order'] = (0, 0, 0, 0)  # No seasonality
+        elif len(data) < 50:
+            # Simple model for short series
             default_params['order'] = (1, 1, 0)
-            default_params['seasonal_order'] = (0, 1, 1, min(12, len(data) // 4))
+            default_params['seasonal_order'] = (0, 0, 1, min(7, len(data) // 3))
         elif len(data) > 365:
             # Use more complex model for long series with medical seasonality
             default_params['order'] = (2, 1, 2)
@@ -274,6 +278,33 @@ class SARIMAForecastingEngine:
                     continue
         
         return best_period if best_score < 0.8 else None
+    
+    def _smooth_predictions(self, predictions: List[float]) -> List[float]:
+        """Apply smoothing to prevent unrealistic oscillations in SARIMA predictions"""
+        
+        if len(predictions) <= 2:
+            return predictions
+        
+        smoothed = predictions.copy()
+        
+        # Apply moving average smoothing for oscillation detection
+        for i in range(1, len(predictions) - 1):
+            # Check for alternating pattern (oscillation)
+            prev_val = predictions[i-1]
+            curr_val = predictions[i]
+            next_val = predictions[i+1] if i+1 < len(predictions) else curr_val
+            
+            # Detect oscillation: if current value is very different from neighbors
+            if len(predictions) >= 3:
+                avg_neighbors = (prev_val + next_val) / 2
+                if abs(curr_val - avg_neighbors) > max(1.0, avg_neighbors * 0.5):
+                    # Apply smoothing: weighted average with neighbors
+                    smoothed[i] = (prev_val * 0.3 + curr_val * 0.4 + next_val * 0.3)
+        
+        # Ensure non-negative values
+        smoothed = [max(0, x) for x in smoothed]
+        
+        return smoothed
     
     def _run_optimized_sarima(self, data: pd.Series, horizon: int, 
                             confidence: float, params: Dict) -> Dict:
@@ -391,11 +422,15 @@ class SARIMAForecastingEngine:
         else:  # YEARLY
             date_increment = timedelta(days=365)
         
-        for i in range(len(sarima_result['forecast'])):
+        # Apply smoothing to prevent unrealistic oscillations
+        raw_predictions = [float(x) for x in sarima_result['forecast']]
+        smoothed_predictions = self._smooth_predictions(raw_predictions)
+        
+        for i in range(len(smoothed_predictions)):
             forecast_date = start_date + (date_increment * i)
-            base_predicted = float(sarima_result['forecast'][i])
+            base_predicted = smoothed_predictions[i]
             
-            # Use pure SARIMA prediction without artificial manipulation
+            # Use smoothed SARIMA prediction
             predicted_total = max(0, round(base_predicted))
             
             # Create base metadata
@@ -463,16 +498,16 @@ class SARIMAForecastingEngine:
                     # Count categories
                     category_counts[category_name] = category_counts.get(category_name, 0) + 1
                     
-                    # Extract specific disease from chief complaint
-                    specific_disease = self._extract_specific_disease(chief_complaint, category_name)
-                    specific_disease_counts[specific_disease] = specific_disease_counts.get(specific_disease, 0) + 1
+                    # Use actual chief complaint as the disease name - no conversion needed
+                    actual_disease = chief_complaint.title()  # Just capitalize properly
+                    specific_disease_counts[actual_disease] = specific_disease_counts.get(actual_disease, 0) + 1
                     
                     
                     
                     # Group diseases by category
                     if category_name not in category_diseases:
                         category_diseases[category_name] = {}
-                    category_diseases[category_name][specific_disease] = category_diseases[category_name].get(specific_disease, 0) + 1
+                    category_diseases[category_name][actual_disease] = category_diseases[category_name].get(actual_disease, 0) + 1
                     
                 except Exception as e:
                     logger.warning(f"Disease classification failed for complaint '{chief_complaint}': {str(e)}")
@@ -591,12 +626,16 @@ class SARIMAForecastingEngine:
             df = pd.DataFrame(response.data)
             logger.info(f"Fetched {len(df)} medical records for analysis")
             
-            # Check for empty/null complaints
+            # Check for empty/null complaints and show sample data
             if not df.empty and 'chief_complaint' in df.columns:
                 null_count = df['chief_complaint'].isnull().sum()
                 empty_count = (df['chief_complaint'] == '').sum()
                 if null_count > 0 or empty_count > 0:
                     logger.warning(f"Data quality issue: {null_count} null complaints, {empty_count} empty complaints out of {len(df)} total records")
+                
+                # Show sample of actual chief complaints from your database
+                valid_complaints = df[df['chief_complaint'].notna() & (df['chief_complaint'] != '')]['chief_complaint'].unique()[:10]
+                logger.info(f"Sample chief complaints from your medical records: {list(valid_complaints)}")
             else:
                 logger.warning("No chief_complaint column found in medical records!")
                 logger.info(f"Available columns: {df.columns.tolist() if not df.empty else 'No data'}")
