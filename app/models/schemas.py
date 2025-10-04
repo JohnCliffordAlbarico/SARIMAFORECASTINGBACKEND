@@ -234,3 +234,106 @@ class QuickInsightResponse(BaseModel):
     trends: Dict[str, str] = Field(description="Current trends")
     alerts: List[str] = Field(description="Important alerts")
     generated_at: str = Field(description="Generation timestamp")
+
+# Disease-Specific Prediction Schemas
+class DiseasePredictionRequest(BaseModel):
+    """Request for disease-specific outbreak predictions with percentages"""
+    forecast_period: int = Field(default=30, ge=7, le=365, description="Forecast period in days")
+    time_aggregation: TimeAggregation = Field(default=TimeAggregation.DAILY, description="Time aggregation level")
+    historical_period: HistoricalPeriod = Field(default=HistoricalPeriod.TWO_YEARS, description="Historical data period")
+    confidence_level: float = Field(default=0.95, ge=0.8, le=0.99, description="Confidence level")
+    
+    # Disease filtering options
+    disease_categories: Optional[List[str]] = Field(None, description="Specific disease categories to predict")
+    severity_filter: Optional[str] = Field(None, description="Filter by severity (mild/moderate/severe)")
+    age_group_filter: Optional[str] = Field(None, description="Filter by age group")
+    seasonal_focus: bool = Field(default=True, description="Focus on seasonal disease patterns")
+    
+    # Prediction options
+    include_outbreak_probability: bool = Field(default=True, description="Include outbreak probability calculations")
+    include_risk_assessment: bool = Field(default=True, description="Include risk level assessment")
+    include_historical_comparison: bool = Field(default=True, description="Compare with historical patterns")
+    min_confidence_threshold: float = Field(default=0.6, ge=0.5, le=1.0, description="Minimum confidence for predictions")
+
+class DiseaseOutbreakPrediction(BaseModel):
+    """Individual disease outbreak prediction with percentage chance"""
+    disease_name: str = Field(description="Name of the disease")
+    disease_category: str = Field(description="Disease category code")
+    category_name: str = Field(description="Human-readable category name")
+    
+    # Prediction percentages
+    outbreak_probability: float = Field(description="Outbreak probability percentage (0-100)")
+    confidence_level: float = Field(description="Confidence in prediction (0-100)")
+    risk_level: str = Field(description="Risk level (Low/Medium/High/Critical)")
+    
+    # Detailed predictions
+    predicted_cases: Dict[str, float] = Field(description="Predicted cases by time period")
+    peak_probability_date: Optional[str] = Field(None, description="Most likely peak date")
+    peak_cases_estimate: Optional[float] = Field(None, description="Estimated peak cases")
+    
+    # Historical context
+    historical_average: float = Field(description="Historical average cases for same period")
+    percentage_change: float = Field(description="Percentage change from historical average")
+    seasonal_pattern: str = Field(description="Seasonal pattern (winter_peak/summer_peak/no_pattern)")
+    
+    # Clinical metadata
+    severity_distribution: Dict[str, float] = Field(description="Expected severity distribution")
+    age_group_risk: Dict[str, float] = Field(description="Risk by age group")
+    contagious: bool = Field(description="Whether disease is contagious")
+    chronic: bool = Field(description="Whether disease is chronic")
+    
+    # Confidence intervals
+    confidence_intervals: Dict[str, Dict[str, float]] = Field(description="Confidence intervals for predictions")
+
+class DiseasePredictionSummary(BaseModel):
+    """Summary of disease predictions"""
+    total_diseases_analyzed: int = Field(description="Total number of diseases analyzed")
+    high_risk_diseases: int = Field(description="Number of high-risk diseases")
+    critical_risk_diseases: int = Field(description="Number of critical-risk diseases")
+    
+    # Overall statistics
+    average_outbreak_probability: float = Field(description="Average outbreak probability across all diseases")
+    highest_risk_disease: str = Field(description="Disease with highest outbreak probability")
+    highest_risk_probability: float = Field(description="Highest outbreak probability percentage")
+    
+    # Seasonal insights
+    seasonal_diseases_count: int = Field(description="Number of diseases with seasonal patterns")
+    dominant_seasonal_pattern: str = Field(description="Most common seasonal pattern")
+    
+    # Confidence metrics
+    average_confidence: float = Field(description="Average confidence across predictions")
+    reliable_predictions_count: int = Field(description="Number of predictions above confidence threshold")
+    
+    # Risk distribution
+    risk_distribution: Dict[str, int] = Field(description="Count of diseases by risk level")
+
+class DiseasePredictionResponse(BaseModel):
+    """Comprehensive disease prediction response with percentages"""
+    prediction_id: str = Field(description="Unique prediction identifier")
+    generated_at: str = Field(description="Timestamp when prediction was generated")
+    forecast_period: int = Field(description="Forecast period in days")
+    
+    # Core predictions
+    disease_predictions: List[DiseaseOutbreakPrediction] = Field(description="Individual disease predictions")
+    prediction_summary: DiseasePredictionSummary = Field(description="Summary of all predictions")
+    
+    # Risk alerts
+    high_risk_alerts: List[Dict[str, Any]] = Field(description="Alerts for high-risk diseases")
+    outbreak_warnings: List[Dict[str, Any]] = Field(description="Potential outbreak warnings")
+    
+    # Recommendations
+    prevention_recommendations: List[ForecastRecommendation] = Field(description="Disease prevention recommendations")
+    resource_recommendations: List[ForecastRecommendation] = Field(description="Resource allocation recommendations")
+    
+    # Model information
+    model_performance: Dict[str, float] = Field(description="Prediction model performance metrics")
+    data_quality: Dict[str, float] = Field(description="Data quality assessment")
+    
+    # Historical context
+    historical_comparison: Dict[str, Any] = Field(description="Comparison with historical disease patterns")
+    seasonal_analysis: Dict[str, Any] = Field(description="Seasonal disease pattern analysis")
+    
+    # Metadata
+    data_sources: List[str] = Field(description="Data sources used for predictions")
+    limitations: List[str] = Field(description="Known limitations of predictions")
+    confidence_notes: List[str] = Field(description="Notes about prediction confidence")

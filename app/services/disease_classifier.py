@@ -458,6 +458,410 @@ class EnhancedDiseaseClassifier:
             }
             for code, cat in self.disease_categories.items()
         }
+    
+    def calculate_outbreak_probability(self, historical_data: pd.DataFrame, 
+                                     disease_category: str, 
+                                     forecast_period: int = 30,
+                                     seasonal_adjustment: bool = True) -> Dict[str, Any]:
+        """
+        Calculate outbreak probability for a specific disease category
+        
+        Args:
+            historical_data: DataFrame with historical disease cases
+            disease_category: Disease category code
+            forecast_period: Number of days to forecast
+            seasonal_adjustment: Whether to apply seasonal adjustments
+            
+        Returns:
+            Dict containing outbreak probability and related metrics
+        """
+        
+        if disease_category not in self.disease_categories:
+            return self._default_outbreak_prediction(disease_category)
+        
+        category = self.disease_categories[disease_category]
+        
+        # Filter data for this disease category
+        category_data = self._filter_data_by_category(historical_data, disease_category)
+        
+        if category_data.empty or len(category_data) < 10:
+            return self._default_outbreak_prediction(disease_category, low_data=True)
+        
+        # Calculate baseline statistics
+        baseline_stats = self._calculate_baseline_statistics(category_data)
+        
+        # Calculate seasonal factors
+        seasonal_factors = self._calculate_seasonal_factors(category_data, category.seasonal_pattern)
+        
+        # Calculate trend factors
+        trend_factors = self._calculate_trend_factors(category_data)
+        
+        # Calculate outbreak probability
+        outbreak_probability = self._calculate_probability_score(
+            baseline_stats, seasonal_factors, trend_factors, 
+            category, forecast_period, seasonal_adjustment
+        )
+        
+        # Determine risk level
+        risk_level = self._determine_risk_level(outbreak_probability)
+        
+        # Calculate confidence intervals
+        confidence_intervals = self._calculate_confidence_intervals(
+            category_data, outbreak_probability, forecast_period
+        )
+        
+        # Generate predictions by time period
+        predicted_cases = self._generate_case_predictions(
+            baseline_stats, seasonal_factors, trend_factors, forecast_period
+        )
+        
+        return {
+            'disease_category': disease_category,
+            'category_name': category.name,
+            'outbreak_probability': round(outbreak_probability, 2),
+            'risk_level': risk_level,
+            'confidence_level': self._calculate_confidence_level(category_data, category),
+            'predicted_cases': predicted_cases,
+            'historical_average': baseline_stats['average_cases'],
+            'percentage_change': self._calculate_percentage_change(baseline_stats, predicted_cases),
+            'seasonal_pattern': category.seasonal_pattern,
+            'severity_distribution': self._estimate_severity_distribution(category_data, category),
+            'age_group_risk': self._calculate_age_group_risk(category_data, category),
+            'contagious': category.contagious,
+            'chronic': category.chronic,
+            'confidence_intervals': confidence_intervals,
+            'peak_probability_date': self._estimate_peak_date(predicted_cases),
+            'peak_cases_estimate': max(predicted_cases.values()) if predicted_cases else 0
+        }
+    
+    def _filter_data_by_category(self, data: pd.DataFrame, category_code: str) -> pd.DataFrame:
+        """Filter historical data by disease category"""
+        
+        if category_code not in self.disease_categories:
+            return pd.DataFrame()
+        
+        category = self.disease_categories[category_code]
+        
+        # Create a mask for records matching this category
+        mask = pd.Series([False] * len(data))
+        
+        for _, row in data.iterrows():
+            chief_complaint = str(row.get('chief_complaint', '')).lower()
+            management = str(row.get('management', '')).lower()
+            text = f"{chief_complaint} {management}"
+            
+            # Check if any keywords match
+            for keyword in category.keywords:
+                if keyword in text:
+                    mask.iloc[row.name] = True
+                    break
+        
+        return data[mask]
+    
+    def _calculate_baseline_statistics(self, data: pd.DataFrame) -> Dict[str, float]:
+        """Calculate baseline statistics from historical data"""
+        
+        if data.empty:
+            return {'average_cases': 0, 'std_cases': 0, 'max_cases': 0, 'trend': 0}
+        
+        # Group by date and count cases
+        if 'visit_date' in data.columns:
+            daily_cases = data.groupby('visit_date').size()
+        else:
+            # Fallback to index-based grouping
+            daily_cases = pd.Series([len(data) / 30] * 30)  # Approximate daily average
+        
+        return {
+            'average_cases': float(daily_cases.mean()),
+            'std_cases': float(daily_cases.std()) if len(daily_cases) > 1 else 0,
+            'max_cases': float(daily_cases.max()),
+            'trend': self._calculate_simple_trend(daily_cases)
+        }
+    
+    def _calculate_seasonal_factors(self, data: pd.DataFrame, seasonal_pattern: str) -> Dict[str, float]:
+        """Calculate seasonal adjustment factors"""
+        
+        from datetime import datetime
+        current_month = datetime.now().month
+        
+        seasonal_multipliers = {
+            'winter_peak': {12: 1.5, 1: 1.8, 2: 1.6, 3: 1.2, 4: 0.8, 5: 0.6, 
+                           6: 0.5, 7: 0.5, 8: 0.6, 9: 0.8, 10: 1.0, 11: 1.3},
+            'summer_peak': {12: 0.6, 1: 0.5, 2: 0.6, 3: 0.8, 4: 1.0, 5: 1.3, 
+                           6: 1.6, 7: 1.8, 8: 1.5, 9: 1.2, 10: 0.8, 11: 0.6},
+            'spring_peak': {12: 0.7, 1: 0.6, 2: 0.8, 3: 1.3, 4: 1.6, 5: 1.8, 
+                           6: 1.2, 7: 0.8, 8: 0.6, 9: 0.8, 10: 1.0, 11: 0.8},
+            'autumn_peak': {12: 1.0, 1: 0.6, 2: 0.5, 3: 0.6, 4: 0.8, 5: 1.0, 
+                           6: 0.8, 7: 0.6, 8: 0.8, 9: 1.3, 10: 1.6, 11: 1.8},
+            'no_pattern': {i: 1.0 for i in range(1, 13)},
+            'seasonal_variation': {12: 1.2, 1: 1.3, 2: 1.1, 3: 0.9, 4: 0.8, 5: 0.7, 
+                                  6: 0.8, 7: 0.9, 8: 1.0, 9: 1.1, 10: 1.2, 11: 1.3}
+        }
+        
+        multiplier_map = seasonal_multipliers.get(seasonal_pattern, seasonal_multipliers['no_pattern'])
+        current_multiplier = multiplier_map.get(current_month, 1.0)
+        
+        return {
+            'current_seasonal_factor': current_multiplier,
+            'seasonal_pattern': seasonal_pattern,
+            'peak_months': [k for k, v in multiplier_map.items() if v > 1.3]
+        }
+    
+    def _calculate_trend_factors(self, data: pd.DataFrame) -> Dict[str, float]:
+        """Calculate trend factors from recent data"""
+        
+        if data.empty or len(data) < 7:
+            return {'trend_direction': 0, 'trend_strength': 0, 'recent_increase': False}
+        
+        # Sort by date if available
+        if 'visit_date' in data.columns:
+            data_sorted = data.sort_values('visit_date')
+            recent_data = data_sorted.tail(14)  # Last 2 weeks
+            older_data = data_sorted.head(14)   # First 2 weeks
+        else:
+            # Fallback to simple split
+            mid_point = len(data) // 2
+            recent_data = data.iloc[mid_point:]
+            older_data = data.iloc[:mid_point]
+        
+        recent_avg = len(recent_data) / 14 if len(recent_data) > 0 else 0
+        older_avg = len(older_data) / 14 if len(older_data) > 0 else 0
+        
+        if older_avg > 0:
+            trend_direction = (recent_avg - older_avg) / older_avg
+        else:
+            trend_direction = 0
+        
+        return {
+            'trend_direction': trend_direction,
+            'trend_strength': abs(trend_direction),
+            'recent_increase': trend_direction > 0.1
+        }
+    
+    def _calculate_probability_score(self, baseline_stats: Dict, seasonal_factors: Dict, 
+                                   trend_factors: Dict, category: DiseaseCategory, 
+                                   forecast_period: int, seasonal_adjustment: bool) -> float:
+        """Calculate overall outbreak probability score (0-100)"""
+        
+        # Base probability from historical average
+        base_prob = min(baseline_stats['average_cases'] * 2, 50)  # Cap at 50%
+        
+        # Seasonal adjustment
+        if seasonal_adjustment:
+            seasonal_multiplier = seasonal_factors['current_seasonal_factor']
+            base_prob *= seasonal_multiplier
+        
+        # Trend adjustment
+        if trend_factors['recent_increase']:
+            base_prob *= (1 + trend_factors['trend_strength'])
+        
+        # Contagious disease bonus
+        if category.contagious:
+            base_prob *= 1.2
+        
+        # Forecast period adjustment (longer periods = higher probability)
+        period_multiplier = 1 + (forecast_period - 30) / 100
+        base_prob *= period_multiplier
+        
+        # Ensure probability is between 0 and 100
+        return max(0, min(100, base_prob))
+    
+    def _determine_risk_level(self, probability: float) -> str:
+        """Determine risk level based on outbreak probability"""
+        
+        if probability >= 75:
+            return "Critical"
+        elif probability >= 50:
+            return "High"
+        elif probability >= 25:
+            return "Medium"
+        else:
+            return "Low"
+    
+    def _calculate_confidence_level(self, data: pd.DataFrame, category: DiseaseCategory) -> float:
+        """Calculate confidence level in the prediction"""
+        
+        # Base confidence on data quantity and quality
+        data_points = len(data)
+        
+        if data_points >= 100:
+            base_confidence = 90
+        elif data_points >= 50:
+            base_confidence = 80
+        elif data_points >= 20:
+            base_confidence = 70
+        else:
+            base_confidence = 60
+        
+        # Adjust for seasonal patterns (more predictable = higher confidence)
+        if category.seasonal_pattern in ['winter_peak', 'summer_peak']:
+            base_confidence += 5
+        elif category.seasonal_pattern == 'no_pattern':
+            base_confidence -= 5
+        
+        return max(50, min(95, base_confidence))
+    
+    def _calculate_confidence_intervals(self, data: pd.DataFrame, probability: float, 
+                                     forecast_period: int) -> Dict[str, Dict[str, float]]:
+        """Calculate confidence intervals for predictions"""
+        
+        # Simple confidence interval calculation
+        margin = probability * 0.15  # 15% margin
+        
+        return {
+            'outbreak_probability': {
+                'lower': max(0, probability - margin),
+                'upper': min(100, probability + margin)
+            },
+            'cases': {
+                'lower': max(0, probability * 0.8),
+                'upper': probability * 1.2
+            }
+        }
+    
+    def _generate_case_predictions(self, baseline_stats: Dict, seasonal_factors: Dict, 
+                                 trend_factors: Dict, forecast_period: int) -> Dict[str, float]:
+        """Generate predicted cases by time period"""
+        
+        base_daily_cases = baseline_stats['average_cases']
+        seasonal_factor = seasonal_factors['current_seasonal_factor']
+        trend_factor = 1 + trend_factors['trend_direction']
+        
+        predictions = {}
+        
+        # Weekly predictions
+        for week in range(1, min(forecast_period // 7 + 1, 5)):
+            weekly_cases = base_daily_cases * 7 * seasonal_factor * trend_factor
+            predictions[f'week_{week}'] = round(weekly_cases, 1)
+        
+        # Monthly prediction if forecast period is long enough
+        if forecast_period >= 30:
+            monthly_cases = base_daily_cases * 30 * seasonal_factor * trend_factor
+            predictions['month_1'] = round(monthly_cases, 1)
+        
+        return predictions
+    
+    def _calculate_percentage_change(self, baseline_stats: Dict, predicted_cases: Dict) -> float:
+        """Calculate percentage change from historical average"""
+        
+        if not predicted_cases or baseline_stats['average_cases'] == 0:
+            return 0
+        
+        # Use first week prediction for comparison
+        first_week_pred = predicted_cases.get('week_1', baseline_stats['average_cases'] * 7)
+        historical_weekly = baseline_stats['average_cases'] * 7
+        
+        if historical_weekly > 0:
+            return round(((first_week_pred - historical_weekly) / historical_weekly) * 100, 1)
+        
+        return 0
+    
+    def _estimate_severity_distribution(self, data: pd.DataFrame, category: DiseaseCategory) -> Dict[str, float]:
+        """Estimate severity distribution for the disease category"""
+        
+        # Default distributions based on disease type
+        if category.chronic:
+            return {'mild': 40.0, 'moderate': 45.0, 'severe': 15.0}
+        elif category.contagious:
+            return {'mild': 60.0, 'moderate': 30.0, 'severe': 10.0}
+        else:
+            return {'mild': 50.0, 'moderate': 35.0, 'severe': 15.0}
+    
+    def _calculate_age_group_risk(self, data: pd.DataFrame, category: DiseaseCategory) -> Dict[str, float]:
+        """Calculate risk by age group"""
+        
+        # Default risk based on category's typical age groups
+        base_risk = {'infants': 20.0, 'children': 25.0, 'young_adults': 30.0, 'adults': 35.0, 'elderly': 40.0}
+        
+        # Adjust based on category's typical age groups
+        for age_group in category.typical_age_groups:
+            if age_group in base_risk:
+                base_risk[age_group] *= 1.5
+        
+        # Normalize to ensure total doesn't exceed reasonable bounds
+        total_risk = sum(base_risk.values())
+        if total_risk > 150:
+            factor = 150 / total_risk
+            base_risk = {k: v * factor for k, v in base_risk.items()}
+        
+        return {k: round(v, 1) for k, v in base_risk.items()}
+    
+    def _estimate_peak_date(self, predicted_cases: Dict) -> Optional[str]:
+        """Estimate the most likely peak date"""
+        
+        if not predicted_cases:
+            return None
+        
+        # Find the period with highest predicted cases
+        max_cases = 0
+        peak_period = None
+        
+        for period, cases in predicted_cases.items():
+            if cases > max_cases:
+                max_cases = cases
+                peak_period = period
+        
+        # Convert period to approximate date
+        from datetime import datetime, timedelta
+        
+        if peak_period and 'week' in peak_period:
+            week_num = int(peak_period.split('_')[1])
+            peak_date = datetime.now() + timedelta(weeks=week_num)
+            return peak_date.strftime('%Y-%m-%d')
+        elif peak_period and 'month' in peak_period:
+            peak_date = datetime.now() + timedelta(days=30)
+            return peak_date.strftime('%Y-%m-%d')
+        
+        return None
+    
+    def _calculate_simple_trend(self, series: pd.Series) -> float:
+        """Calculate simple trend from time series"""
+        
+        if len(series) < 2:
+            return 0
+        
+        # Simple linear trend calculation
+        x = range(len(series))
+        y = series.values
+        
+        n = len(x)
+        sum_x = sum(x)
+        sum_y = sum(y)
+        sum_xy = sum(xi * yi for xi, yi in zip(x, y))
+        sum_x2 = sum(xi * xi for xi in x)
+        
+        if n * sum_x2 - sum_x * sum_x == 0:
+            return 0
+        
+        slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x)
+        return slope
+    
+    def _default_outbreak_prediction(self, disease_category: str, low_data: bool = False) -> Dict[str, Any]:
+        """Return default prediction when insufficient data"""
+        
+        category_name = self.disease_categories.get(disease_category, {}).get('name', 'Unknown Disease')
+        
+        return {
+            'disease_category': disease_category,
+            'category_name': category_name,
+            'outbreak_probability': 15.0 if low_data else 5.0,
+            'risk_level': 'Low',
+            'confidence_level': 50.0,
+            'predicted_cases': {'week_1': 1.0, 'week_2': 1.0},
+            'historical_average': 0.5,
+            'percentage_change': 0.0,
+            'seasonal_pattern': 'no_pattern',
+            'severity_distribution': {'mild': 70.0, 'moderate': 25.0, 'severe': 5.0},
+            'age_group_risk': {'infants': 15.0, 'children': 20.0, 'young_adults': 25.0, 'adults': 25.0, 'elderly': 30.0},
+            'contagious': False,
+            'chronic': False,
+            'confidence_intervals': {
+                'outbreak_probability': {'lower': 0.0, 'upper': 25.0},
+                'cases': {'lower': 0.0, 'upper': 2.0}
+            },
+            'peak_probability_date': None,
+            'peak_cases_estimate': 1.0
+        }
 
 # Global instance
 disease_classifier = EnhancedDiseaseClassifier()
