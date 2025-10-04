@@ -680,10 +680,7 @@ async def _fetch_historical_medical_data(request: DiseasePredictionRequest) -> p
         df['management'] = df['management'].fillna('')
         df['diagnosis'] = df['diagnosis'].fillna('')
         
-        logger.info(f"Final result: {len(df)} medical records for disease prediction analysis")
-        logger.info(f"Sample data columns: {list(df.columns)}")
-        if len(df) > 0:
-            logger.info(f"Sample record: {df.iloc[0].to_dict()}")
+        logger.info(f"Fetched {len(df)} medical records for analysis")
         
         return df
         

@@ -391,7 +391,10 @@ class SARIMAForecastingEngine:
         
         for i in range(len(sarima_result['forecast'])):
             forecast_date = start_date + (date_increment * i)
-            predicted_total = float(sarima_result['forecast'][i])
+            base_predicted = float(sarima_result['forecast'][i])
+            
+            # Use pure SARIMA prediction without artificial manipulation
+            predicted_total = max(0, round(base_predicted))
             
             # Create base metadata
             metadata = {
@@ -401,33 +404,14 @@ class SARIMAForecastingEngine:
             }
             
             # Add disease breakdown for disease trends forecasts
-            logger.info(f"Checking disease breakdown: forecast_type={forecast_type}, is_disease_trends={forecast_type == ForecastType.DISEASE_TRENDS}")
-            
             if forecast_type == ForecastType.DISEASE_TRENDS:
                 if predicted_total > 0:
-                    logger.info(f"🦠 Generating disease breakdown for {predicted_total} predicted cases on {forecast_date}")
-                    # Use actual SARIMA prediction without artificial scaling
-                    # Only scale if prediction is extremely low (< 1) to avoid empty breakdowns
-                    scaled_total = max(predicted_total, 1) if predicted_total < 1 else predicted_total
-                    if scaled_total != predicted_total:
-                        logger.info(f"📈 Minimal scaling from {predicted_total} to {scaled_total} to avoid empty breakdown")
-                    
-                    disease_breakdown = self._generate_disease_breakdown_from_db(scaled_total)
+                    # Use pure SARIMA prediction - no scaling at all
+                    disease_breakdown = self._generate_disease_breakdown_from_db(predicted_total, forecast_date)
                     metadata["disease_breakdown"] = disease_breakdown
-                    logger.info(f"✅ Disease breakdown generated: {len(disease_breakdown.get('categories', []))} categories, {len(disease_breakdown.get('diseases', []))} diseases")
-                    
-                    # Debug: Log the actual breakdown structure
-                    if disease_breakdown.get('diseases') or disease_breakdown.get('categories'):
-                        logger.info(f"🔍 Sample diseases: {[d.get('disease_name', 'Unknown') for d in disease_breakdown.get('diseases', [])][:3]}")
-                        logger.info(f"🔍 Sample categories: {[c.get('category_name', 'Unknown') for c in disease_breakdown.get('categories', [])][:3]}")
-                    else:
-                        logger.warning(f"⚠️ Disease breakdown is empty - no diseases or categories found")
                 else:
                     # No cases predicted, no breakdown needed
                     metadata["disease_breakdown"] = {"diseases": [], "categories": []}
-                    logger.info("⚪ No cases predicted - empty disease breakdown")
-            else:
-                logger.info(f"Skipping disease breakdown - not a disease trends forecast")
             
             forecast_data.append(ForecastDataPoint(
                 date=forecast_date.strftime("%Y-%m-%d"),
@@ -442,7 +426,7 @@ class SARIMAForecastingEngine:
         
         return forecast_data
     
-    def _generate_disease_breakdown(self, predicted_total: float, raw_data: pd.DataFrame) -> Dict[str, Any]:
+    def _generate_disease_breakdown(self, predicted_total: float, raw_data: pd.DataFrame, forecast_date: datetime.date = None) -> Dict[str, Any]:
         """Generate detailed disease breakdown with specific diseases and categories"""
         
         from ..services.disease_classifier import disease_classifier
@@ -457,7 +441,6 @@ class SARIMAForecastingEngine:
         total_records = len(raw_data)
         
         # Classify each medical record using the enhanced classifier
-        logger.info(f"Processing {total_records} medical records for disease breakdown")
         
         for _, row in raw_data.iterrows():
             chief_complaint = str(row.get('chief_complaint', '')).strip()
@@ -482,14 +465,7 @@ class SARIMAForecastingEngine:
                     specific_disease = self._extract_specific_disease(chief_complaint, category_name)
                     specific_disease_counts[specific_disease] = specific_disease_counts.get(specific_disease, 0) + 1
                     
-                    # Log unrecognized complaints for future improvement
-                    if 'Condition' in specific_disease and specific_disease not in ['Unspecified Condition']:
-                        logger.warning(f"Unrecognized complaint pattern: '{chief_complaint}' → Fallback: '{specific_disease}'")
                     
-                    # Log actual data being processed (first 10 records for debugging)
-                    if len(specific_disease_counts) <= 10:
-                        logger.info(f"Real medical record: '{chief_complaint}' → Category: '{category_name}' → Disease: '{specific_disease}'")
-                        logger.info(f"Classification details: {classification}")
                     
                     # Group diseases by category
                     if category_name not in category_diseases:
@@ -522,12 +498,12 @@ class SARIMAForecastingEngine:
         
         remaining_cases = predicted_total
         
-        # Distribute predicted cases proportionally among top diseases
+        # Distribute predicted cases proportionally based purely on historical medical record frequency
         for i, (disease_name, historical_count) in enumerate(sorted_diseases[:10]):  # Top 10 diseases
             if remaining_cases <= 0:
                 break
                 
-            # Calculate proportion based on historical frequency
+            # Calculate proportion based purely on historical frequency from medical records
             proportion = historical_count / total_historical_cases
             
             # For the last disease, assign all remaining cases to avoid rounding errors
@@ -573,13 +549,9 @@ class SARIMAForecastingEngine:
                 })
                 remaining_category_cases -= predicted_cases
         
-        # Log the results for debugging
-        logger.info(f"✅ Generated {len(diseases)} diseases and {len(categories)} categories for {predicted_total} total cases")
-        
         # Verify math is correct
         total_disease_cases = sum(d['predicted_cases'] for d in diseases)
         total_category_cases = sum(c['predicted_cases'] for c in categories)
-        logger.info(f"🔢 Math check - Diseases total: {total_disease_cases}, Categories total: {total_category_cases}, Predicted total: {predicted_total}")
         
         return {
             "diseases": diseases,
@@ -594,7 +566,7 @@ class SARIMAForecastingEngine:
             }
         }
     
-    def _generate_disease_breakdown_from_db(self, predicted_total: float) -> Dict[str, Any]:
+    def _generate_disease_breakdown_from_db(self, predicted_total: float, forecast_date: datetime.date = None) -> Dict[str, Any]:
         """Generate disease breakdown by fetching medical records directly from database"""
         
         from ..services.supabase import supabase
@@ -615,22 +587,19 @@ class SARIMAForecastingEngine:
                 return {"diseases": [], "categories": []}
             
             df = pd.DataFrame(response.data)
-            logger.info(f"Fetched {len(df)} medical records for disease breakdown")
+            logger.info(f"Fetched {len(df)} medical records for analysis")
             
-            # Debug: Log actual chief complaints to see what we're working with
+            # Check for empty/null complaints
             if not df.empty and 'chief_complaint' in df.columns:
-                sample_complaints = df['chief_complaint'].dropna().head(10).tolist()
-                logger.info(f"Sample chief complaints from your medical records: {sample_complaints}")
-                
-                # Check for empty/null complaints
                 null_count = df['chief_complaint'].isnull().sum()
                 empty_count = (df['chief_complaint'] == '').sum()
-                logger.info(f"Data quality: {null_count} null complaints, {empty_count} empty complaints out of {len(df)} total records")
+                if null_count > 0 or empty_count > 0:
+                    logger.warning(f"Data quality issue: {null_count} null complaints, {empty_count} empty complaints out of {len(df)} total records")
             else:
                 logger.warning("No chief_complaint column found in medical records!")
                 logger.info(f"Available columns: {df.columns.tolist() if not df.empty else 'No data'}")
             
-            return self._generate_disease_breakdown(predicted_total, df)
+            return self._generate_disease_breakdown(predicted_total, df, forecast_date)
             
         except Exception as e:
             logger.error(f"Failed to fetch medical records for disease breakdown: {str(e)}")
