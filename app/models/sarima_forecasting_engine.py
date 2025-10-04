@@ -403,12 +403,15 @@ class SARIMAForecastingEngine:
             # Add disease breakdown for disease trends forecasts
             logger.info(f"Checking disease breakdown: forecast_type={forecast_type}, is_disease_trends={forecast_type == ForecastType.DISEASE_TRENDS}")
             
-            if forecast_type == ForecastType.DISEASE_TRENDS:
-                logger.info("Generating disease breakdown for disease trends forecast")
+            if forecast_type == ForecastType.DISEASE_TRENDS and predicted_total > 0:
+                logger.info(f"Generating disease breakdown for {predicted_total} predicted cases on {forecast_date}")
                 # Fetch raw medical records directly for disease breakdown
                 disease_breakdown = self._generate_disease_breakdown_from_db(predicted_total)
                 metadata["disease_breakdown"] = disease_breakdown
                 logger.info(f"Disease breakdown generated: {len(disease_breakdown.get('categories', []))} categories, {len(disease_breakdown.get('diseases', []))} diseases")
+            elif forecast_type == ForecastType.DISEASE_TRENDS and predicted_total == 0:
+                # No cases predicted, no breakdown needed
+                metadata["disease_breakdown"] = {"diseases": [], "categories": []}
             else:
                 logger.info(f"Skipping disease breakdown - not a disease trends forecast")
             
@@ -448,14 +451,15 @@ class SARIMAForecastingEngine:
             
             if chief_complaint and chief_complaint.lower() != 'nan':
                 try:
-                    # Use the enhanced disease classifier
-                    classification = disease_classifier.classify_disease(
-                        chief_complaint=chief_complaint,
-                        management=management,
-                        patient_age=row.get('patient_age', 35)
-                    )
+                    # Skip the faulty enhanced classifier and use our custom logic
+                    category_name = self._classify_disease_correctly(chief_complaint)
                     
-                    category_name = classification.get('category_name', 'Other')
+                    # Create a simple classification object for logging
+                    classification = {
+                        'category_name': category_name,
+                        'confidence': 0.9,
+                        'severity': 'moderate'
+                    }
                     
                     # Count categories
                     category_counts[category_name] = category_counts.get(category_name, 0) + 1
@@ -471,6 +475,7 @@ class SARIMAForecastingEngine:
                     # Log actual data being processed (first 10 records for debugging)
                     if len(specific_disease_counts) <= 10:
                         logger.info(f"Real medical record: '{chief_complaint}' → Category: '{category_name}' → Disease: '{specific_disease}'")
+                        logger.info(f"Classification details: {classification}")
                     
                     # Group diseases by category
                     if category_name not in category_diseases:
@@ -781,6 +786,37 @@ class SARIMAForecastingEngine:
                 return f"{word.capitalize()} Condition"
         
         return None
+    
+    def _classify_disease_correctly(self, chief_complaint: str) -> str:
+        """Correctly classify diseases based on your actual medical data"""
+        
+        complaint_lower = chief_complaint.lower().strip()
+        
+        # Correct classification for your specific diseases
+        if any(keyword in complaint_lower for keyword in ['dengue', 'dengue fever']):
+            return 'Viral Infections'
+        elif any(keyword in complaint_lower for keyword in ['leptospirosis', 'lepto']):
+            return 'Bacterial Infections'  
+        elif any(keyword in complaint_lower for keyword in ['typhoid', 'typhoid fever']):
+            return 'Bacterial Infections'
+        elif any(keyword in complaint_lower for keyword in ['chickenpox', 'chicken pox']):
+            return 'Viral Infections'
+        elif any(keyword in complaint_lower for keyword in ['influenza', 'flu', 'influenza-like']):
+            return 'Viral Infections'
+        elif any(keyword in complaint_lower for keyword in ['diarrhea', 'stomach ache', 'abdominal', 'gastric']):
+            return 'Gastrointestinal Disorders'
+        elif any(keyword in complaint_lower for keyword in ['fever', 'high fever']):
+            return 'Infectious Diseases'
+        elif any(keyword in complaint_lower for keyword in ['rash', 'skin rash']):
+            return 'Dermatological Conditions'
+        elif any(keyword in complaint_lower for keyword in ['pain', 'ache', 'muscle pain']):
+            return 'Musculoskeletal Conditions'
+        elif any(keyword in complaint_lower for keyword in ['cough', 'cold', 'respiratory']):
+            return 'Respiratory Infections'
+        elif any(keyword in complaint_lower for keyword in ['infection']):
+            return 'Infectious Diseases'
+        else:
+            return 'Other Medical Conditions'
     
     def _calculate_forecast_summary(self, historical_data: pd.Series,
                                   forecast_data: List[ForecastDataPoint],
