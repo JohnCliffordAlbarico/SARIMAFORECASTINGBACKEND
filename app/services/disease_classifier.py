@@ -1,7 +1,7 @@
 # app/services/disease_classifier.py
 import re
 import pandas as pd
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 import logging
 
