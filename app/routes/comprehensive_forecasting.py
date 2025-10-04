@@ -13,6 +13,7 @@ from ..models.schemas import (
     ComprehensiveForecastRequest, ComprehensiveForecastResponse,
     QuickInsightRequest, QuickInsightResponse,
     DiseasePredictionRequest, DiseasePredictionResponse,
+    ForecastRecommendation, DiseaseOutbreakPrediction, DiseasePredictionSummary,
     ForecastType, TimeAggregation, HistoricalPeriod
 )
 from ..models.sarima_forecasting_engine import SARIMAForecastingEngine
@@ -632,10 +633,6 @@ async def _generate_comprehensive_disease_predictions(
     """Generate comprehensive disease predictions with percentages"""
     
     from ..services.disease_classifier import disease_classifier
-    from ..models.schemas import (
-        DiseaseOutbreakPrediction, DiseasePredictionSummary, 
-        ForecastRecommendation
-    )
     
     prediction_id = str(uuid.uuid4())
     generated_at = datetime.now().isoformat()
@@ -825,8 +822,6 @@ def _calculate_age(date_of_birth: str) -> int:
 def _generate_prevention_recommendations(disease_predictions: List, high_risk_alerts: List) -> List[ForecastRecommendation]:
     """Generate disease prevention recommendations"""
     
-    from ..models.schemas import ForecastRecommendation
-    
     recommendations = []
     
     # High-risk disease recommendations
@@ -872,8 +867,6 @@ def _generate_prevention_recommendations(disease_predictions: List, high_risk_al
 
 def _generate_resource_recommendations(disease_predictions: List, summary) -> List[ForecastRecommendation]:
     """Generate resource allocation recommendations"""
-    
-    from ..models.schemas import ForecastRecommendation
     
     recommendations = []
     
