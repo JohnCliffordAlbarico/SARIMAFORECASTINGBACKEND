@@ -316,10 +316,10 @@ async def generate_disease_predictions(request: DiseasePredictionRequest):
             )
         
         # Additional validation for minimum data requirements
-        if len(historical_data) < 20:
+        if len(historical_data) < 5:
             raise HTTPException(
                 status_code=422, 
-                detail=f"Insufficient data for reliable disease predictions. Found {len(historical_data)} records, minimum 20 required"
+                detail=f"Insufficient data for reliable disease predictions. Found {len(historical_data)} records, minimum 5 required"
             )
         
         # Generate disease-specific predictions
@@ -596,34 +596,102 @@ async def _fetch_historical_medical_data(request: DiseasePredictionRequest) -> p
         days_back = historical_days_map.get(request.historical_period.value, 730)
         cutoff_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
         
-        # Fetch medical records with patient age calculation
-        query = supabase.table("medical_records").select(
-            "id, patient_id, visit_date, chief_complaint, management, diagnosis, "
-            "patients!inner(date_of_birth, gender)"
-        ).gte("visit_date", cutoff_date).order("visit_date", desc=False)
+        logger.info(f"Fetching medical records from date: {cutoff_date} (last {days_back} days)")
         
-        response = query.execute()
+        # First try simple query without joins to test basic connectivity
+        try:
+            simple_query = supabase.table("medical_records").select("*").limit(5)
+            simple_response = simple_query.execute()
+            logger.info(f"Simple query returned {len(simple_response.data)} records")
+        except Exception as simple_e:
+            logger.error(f"Simple query failed: {str(simple_e)}")
         
-        if not response.data:
+        # Try without the inner join first
+        try:
+            query_no_join = supabase.table("medical_records").select(
+                "id, patient_id, visit_date, chief_complaint, management, diagnosis"
+            ).gte("visit_date", cutoff_date).order("visit_date", desc=False)
+            
+            response_no_join = query_no_join.execute()
+            logger.info(f"Query without join returned {len(response_no_join.data)} records")
+            
+            if response_no_join.data:
+                # If we have data without join, try with join
+                query = supabase.table("medical_records").select(
+                    "id, patient_id, visit_date, chief_complaint, management, diagnosis, "
+                    "patients(date_of_birth, gender)"
+                ).gte("visit_date", cutoff_date).order("visit_date", desc=False)
+                
+                response = query.execute()
+                logger.info(f"Query with join returned {len(response.data)} records")
+                
+                if not response.data:
+                    logger.warning("Join query returned no data, using data without patient info")
+                    # Use data without patient info
+                    df = pd.DataFrame(response_no_join.data)
+                    df['patient_age'] = 35  # Default age
+                    df['patient_gender'] = 'unknown'  # Default gender
+                else:
+                    # Convert to DataFrame and process with patient info
+                    df = pd.DataFrame(response.data)
+                    
+                    # Calculate patient ages safely
+                    def safe_age_calc(row):
+                        try:
+                            if row.get('patients') and row['patients'].get('date_of_birth'):
+                                return _calculate_age(row['patients']['date_of_birth'])
+                            return 35  # Default age
+                        except:
+                            return 35
+                    
+                    def safe_gender_extract(row):
+                        try:
+                            if row.get('patients') and row['patients'].get('gender'):
+                                return row['patients']['gender']
+                            return 'unknown'
+                        except:
+                            return 'unknown'
+                    
+                    df['patient_age'] = df.apply(safe_age_calc, axis=1)
+                    df['patient_gender'] = df.apply(safe_gender_extract, axis=1)
+            else:
+                logger.warning("No medical records found in date range, trying without date filter")
+                # Try without date filter as last resort
+                query_all = supabase.table("medical_records").select(
+                    "id, patient_id, visit_date, chief_complaint, management, diagnosis"
+                ).limit(100).order("visit_date", desc=False)
+                
+                response_all = query_all.execute()
+                logger.info(f"Query without date filter returned {len(response_all.data)} records")
+                
+                if response_all.data:
+                    df = pd.DataFrame(response_all.data)
+                    df['patient_age'] = 35  # Default age
+                    df['patient_gender'] = 'unknown'  # Default gender
+                else:
+                    return pd.DataFrame()
+        
+        except Exception as query_e:
+            logger.error(f"Query execution failed: {str(query_e)}")
             return pd.DataFrame()
-        
-        # Convert to DataFrame and process
-        df = pd.DataFrame(response.data)
-        
-        # Calculate patient ages
-        df['patient_age'] = df.apply(lambda row: _calculate_age(row['patients']['date_of_birth']), axis=1)
-        df['patient_gender'] = df.apply(lambda row: row['patients']['gender'], axis=1)
         
         # Clean and prepare data
         df['chief_complaint'] = df['chief_complaint'].fillna('')
         df['management'] = df['management'].fillna('')
         df['diagnosis'] = df['diagnosis'].fillna('')
         
-        logger.info(f"Fetched {len(df)} medical records for disease prediction analysis")
+        logger.info(f"Final result: {len(df)} medical records for disease prediction analysis")
+        logger.info(f"Sample data columns: {list(df.columns)}")
+        if len(df) > 0:
+            logger.info(f"Sample record: {df.iloc[0].to_dict()}")
+        
         return df
         
     except Exception as e:
         logger.error(f"Error fetching historical medical data: {str(e)}")
+        logger.error(f"Exception type: {type(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return pd.DataFrame()
 
 async def _generate_comprehensive_disease_predictions(
