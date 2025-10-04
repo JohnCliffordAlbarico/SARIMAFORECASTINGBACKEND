@@ -57,3 +57,5 @@ htmlcov/
 dummy_data_*.json
 dummy_data_manager.js
 dummy_data_interface.html
+
+simple_cleanup.sql
