@@ -498,9 +498,12 @@ class SARIMAForecastingEngine:
                     # Count categories
                     category_counts[category_name] = category_counts.get(category_name, 0) + 1
                     
-                    # Use actual chief complaint as the disease name - no conversion needed
-                    actual_disease = chief_complaint.title()  # Just capitalize properly
+                    # Use actual chief complaint as the disease name - NO CONVERSION AT ALL
+                    actual_disease = chief_complaint.strip()  # Keep original case and format
                     specific_disease_counts[actual_disease] = specific_disease_counts.get(actual_disease, 0) + 1
+                    
+                    # EXPLICIT DEBUG logging to verify we're using real data
+                    logger.info(f"🔥 REAL CHIEF COMPLAINT: '{chief_complaint}' -> DISEASE OUTPUT: '{actual_disease}'")
                     
                     
                     
@@ -557,6 +560,8 @@ class SARIMAForecastingEngine:
                     "historical_frequency": historical_count,
                     "confidence": min(0.95, 0.7 + (historical_count / total_historical_cases))
                 })
+                # EXPLICIT logging to see what disease names are being returned
+                logger.info(f"🎯 FINAL DISEASE OUTPUT: '{disease_name}' with {predicted_cases} cases")
                 remaining_cases -= predicted_cases
         
         # Generate category breakdown
@@ -612,6 +617,9 @@ class SARIMAForecastingEngine:
         import pandas as pd
         
         try:
+            # Clear any cached data to ensure fresh results
+            self.data_cache.clear()
+            
             # Fetch medical records from the last 2 years for pattern analysis
             cutoff_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
             
