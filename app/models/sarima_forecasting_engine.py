@@ -56,7 +56,7 @@ class SARIMAForecastingEngine:
             
             # Generate forecast data points
             forecast_data = self._create_forecast_datapoints(
-                sarima_result, time_aggregation, forecast_horizon, forecast_type, data
+                sarima_result, time_aggregation, forecast_horizon, forecast_type
             )
             
             # Calculate comprehensive summary
@@ -371,8 +371,7 @@ class SARIMAForecastingEngine:
     def _create_forecast_datapoints(self, sarima_result: Dict,
                                   time_aggregation: TimeAggregation,
                                   forecast_horizon: int,
-                                  forecast_type: ForecastType = None,
-                                  raw_data: pd.DataFrame = None) -> List[ForecastDataPoint]:
+                                  forecast_type: ForecastType = None) -> List[ForecastDataPoint]:
         """Create detailed forecast data points with disease breakdowns for disease trends"""
         
         forecast_data = []
@@ -402,9 +401,16 @@ class SARIMAForecastingEngine:
             }
             
             # Add disease breakdown for disease trends forecasts
-            if forecast_type == ForecastType.DISEASE_TRENDS and raw_data is not None:
-                disease_breakdown = self._generate_disease_breakdown(predicted_total, raw_data)
+            logger.info(f"Checking disease breakdown: forecast_type={forecast_type}, is_disease_trends={forecast_type == ForecastType.DISEASE_TRENDS}")
+            
+            if forecast_type == ForecastType.DISEASE_TRENDS:
+                logger.info("Generating disease breakdown for disease trends forecast")
+                # Fetch raw medical records directly for disease breakdown
+                disease_breakdown = self._generate_disease_breakdown_from_db(predicted_total)
                 metadata["disease_breakdown"] = disease_breakdown
+                logger.info(f"Disease breakdown generated: {len(disease_breakdown.get('categories', []))} categories, {len(disease_breakdown.get('diseases', []))} diseases")
+            else:
+                logger.info(f"Skipping disease breakdown - not a disease trends forecast")
             
             forecast_data.append(ForecastDataPoint(
                 date=forecast_date.strftime("%Y-%m-%d"),
@@ -457,6 +463,10 @@ class SARIMAForecastingEngine:
                     # Extract specific disease from chief complaint
                     specific_disease = self._extract_specific_disease(chief_complaint, category_name)
                     specific_disease_counts[specific_disease] = specific_disease_counts.get(specific_disease, 0) + 1
+                    
+                    # Log unrecognized complaints for future improvement
+                    if 'Condition' in specific_disease and specific_disease not in ['Unspecified Condition']:
+                        logger.warning(f"Unrecognized complaint pattern: '{chief_complaint}' → Fallback: '{specific_disease}'")
                     
                     # Log actual data being processed (first 10 records for debugging)
                     if len(specific_disease_counts) <= 10:
@@ -536,36 +546,113 @@ class SARIMAForecastingEngine:
             "diseases": top_diseases[:10]  # Top 10 specific diseases overall
         }
     
+    def _generate_disease_breakdown_from_db(self, predicted_total: float) -> Dict[str, Any]:
+        """Generate disease breakdown by fetching medical records directly from database"""
+        
+        from ..services.supabase import supabase
+        from ..services.disease_classifier import disease_classifier
+        from datetime import datetime, timedelta
+        import pandas as pd
+        
+        try:
+            # Fetch medical records from the last 2 years for pattern analysis
+            cutoff_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+            
+            response = supabase.table("medical_records").select(
+                "visit_date, chief_complaint, management"
+            ).gte("visit_date", cutoff_date).not_.is_("chief_complaint", "null").order("visit_date").execute()
+            
+            if not response.data:
+                logger.warning("No medical records found for disease breakdown")
+                return {"diseases": [], "categories": []}
+            
+            df = pd.DataFrame(response.data)
+            logger.info(f"Fetched {len(df)} medical records for disease breakdown")
+            
+            # Debug: Log actual chief complaints to see what we're working with
+            if not df.empty and 'chief_complaint' in df.columns:
+                sample_complaints = df['chief_complaint'].dropna().head(10).tolist()
+                logger.info(f"Sample chief complaints from your medical records: {sample_complaints}")
+                
+                # Check for empty/null complaints
+                null_count = df['chief_complaint'].isnull().sum()
+                empty_count = (df['chief_complaint'] == '').sum()
+                logger.info(f"Data quality: {null_count} null complaints, {empty_count} empty complaints out of {len(df)} total records")
+            else:
+                logger.warning("No chief_complaint column found in medical records!")
+                logger.info(f"Available columns: {df.columns.tolist() if not df.empty else 'No data'}")
+            
+            return self._generate_disease_breakdown(predicted_total, df)
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch medical records for disease breakdown: {str(e)}")
+            return {"diseases": [], "categories": []}
+    
     def _extract_specific_disease(self, chief_complaint: str, category: str) -> str:
         """Extract specific disease name from chief complaint"""
         
         complaint_lower = chief_complaint.lower().strip()
         
-        # Common specific disease patterns
+        # Enhanced disease patterns based on your actual medical records
         disease_patterns = {
+            # Gastrointestinal - Your top complaint!
+            'diarrhea and stomach ache': 'Diarrhea with Abdominal Pain',
+            'diarrhea': 'Diarrhea',
+            'stomach ache': 'Abdominal Pain',
+            'stomach pain': 'Gastric Pain',
+            'abdominal pain': 'Abdominal Pain',
+            'gastritis': 'Gastritis',
+            'constipation': 'Constipation',
+            'nausea': 'Nausea/Vomiting',
+            'vomiting': 'Nausea/Vomiting',
+            'heartburn': 'Gastroesophageal Reflux',
+            'ulcer': 'Peptic Ulcer',
+            
+            # Infectious Diseases - Your main categories!
+            'dengue fever': 'Dengue Fever',
+            'dengue fever with rash': 'Dengue Fever',
+            'dengue': 'Dengue Fever',
+            'leptospirosis': 'Leptospirosis',
+            'leptospirosis (fever, muscle pain)': 'Leptospirosis',
+            'typhoid fever': 'Typhoid Fever',
+            'typhoid': 'Typhoid Fever',
+            'chickenpox': 'Chickenpox',
+            'chickenpox rash': 'Chickenpox',
+            'influenza-like illness': 'Influenza-like Illness',
+            'influenza': 'Influenza',
+            'flu': 'Influenza',
+            
+            # Fever patterns
+            'fever': 'Fever',
+            'high fever': 'High Fever',
+            'fever with rash': 'Fever with Rash',
+            'fever, muscle pain': 'Fever with Myalgia',
+            
+            # Rash patterns
+            'rash': 'Skin Rash',
+            'skin rash': 'Skin Rash',
+            'body rash': 'Generalized Rash',
+            
             # Respiratory
             'pneumonia': 'Pneumonia',
             'asthma': 'Asthma',
             'bronchitis': 'Bronchitis',
-            'flu': 'Influenza',
             'cold': 'Common Cold',
+            'cough': 'Cough',
             'sinusitis': 'Sinusitis',
             'pharyngitis': 'Pharyngitis',
             'laryngitis': 'Laryngitis',
             'tonsillitis': 'Tonsillitis',
             
-            # Gastrointestinal
-            'gastritis': 'Gastritis',
-            'diarrhea': 'Diarrhea',
-            'constipation': 'Constipation',
-            'nausea': 'Nausea/Vomiting',
-            'vomiting': 'Nausea/Vomiting',
-            'abdominal pain': 'Abdominal Pain',
-            'stomach pain': 'Gastric Pain',
-            'heartburn': 'Gastroesophageal Reflux',
-            'ulcer': 'Peptic Ulcer',
+            # Musculoskeletal
+            'muscle pain': 'Myalgia',
+            'back pain': 'Back Pain',
+            'joint pain': 'Joint Pain',
+            'arthritis': 'Arthritis',
+            'headache': 'Headache',
+            'migraine': 'Migraine',
             
-            # Infectious
+            # Other infections
             'urinary tract infection': 'Urinary Tract Infection',
             'uti': 'Urinary Tract Infection',
             'skin infection': 'Skin Infection',
@@ -578,16 +665,7 @@ class SARIMAForecastingEngine:
             'heart palpitation': 'Palpitations',
             'high blood pressure': 'Hypertension',
             
-            # Musculoskeletal
-            'back pain': 'Back Pain',
-            'joint pain': 'Joint Pain',
-            'arthritis': 'Arthritis',
-            'muscle pain': 'Myalgia',
-            'headache': 'Headache',
-            'migraine': 'Migraine',
-            
             # Dermatological
-            'rash': 'Skin Rash',
             'eczema': 'Eczema',
             'dermatitis': 'Dermatitis',
             'acne': 'Acne',
@@ -602,15 +680,19 @@ class SARIMAForecastingEngine:
             'thyroid': 'Thyroid Disorder',
             
             # General
-            'fever': 'Fever',
             'fatigue': 'Fatigue',
             'weakness': 'General Weakness'
         }
         
-        # Look for specific disease patterns
+        # Look for specific disease patterns (exact matches first)
         for pattern, disease_name in disease_patterns.items():
             if pattern in complaint_lower:
                 return disease_name
+        
+        # Smart fallback: Extract meaningful keywords from unrecognized complaints
+        unrecognized_disease = self._extract_from_unrecognized_complaint(complaint_lower)
+        if unrecognized_disease:
+            return unrecognized_disease
         
         # If no specific pattern found, create a generic name based on category
         category_defaults = {
@@ -628,6 +710,77 @@ class SARIMAForecastingEngine:
         }
         
         return category_defaults.get(category, f"{category} Condition")
+    
+    def _extract_from_unrecognized_complaint(self, complaint_lower: str) -> str:
+        """Smart extraction from unrecognized chief complaints"""
+        
+        # Common medical keywords that can help identify conditions
+        keyword_mappings = {
+            # Symptoms to conditions
+            'pain': 'Pain Syndrome',
+            'ache': 'Pain Syndrome', 
+            'hurt': 'Pain Syndrome',
+            'sore': 'Soreness',
+            'swelling': 'Swelling/Edema',
+            'swollen': 'Swelling/Edema',
+            'bleeding': 'Bleeding Disorder',
+            'discharge': 'Discharge Condition',
+            'itching': 'Pruritic Condition',
+            'burning': 'Burning Sensation',
+            'numbness': 'Numbness/Neuropathy',
+            'tingling': 'Paresthesia',
+            
+            # Body parts + common issues
+            'eye': 'Eye Condition',
+            'ear': 'Ear Condition', 
+            'nose': 'Nasal Condition',
+            'throat': 'Throat Condition',
+            'neck': 'Neck Condition',
+            'shoulder': 'Shoulder Condition',
+            'arm': 'Arm Condition',
+            'hand': 'Hand Condition',
+            'leg': 'Leg Condition',
+            'foot': 'Foot Condition',
+            'knee': 'Knee Condition',
+            
+            # Common conditions
+            'infection': 'Infection',
+            'inflammation': 'Inflammatory Condition',
+            'allergy': 'Allergic Reaction',
+            'injury': 'Injury/Trauma',
+            'wound': 'Wound',
+            'cut': 'Laceration',
+            'burn': 'Burn Injury',
+            'fracture': 'Fracture',
+            'sprain': 'Sprain',
+            
+            # Vital signs issues
+            'blood pressure': 'Hypertension',
+            'bp': 'Blood Pressure Issue',
+            'sugar': 'Blood Sugar Issue',
+            'glucose': 'Glucose Disorder',
+            
+            # Mental health
+            'anxiety': 'Anxiety',
+            'depression': 'Depression',
+            'stress': 'Stress-related Condition',
+            'insomnia': 'Sleep Disorder',
+            'sleep': 'Sleep Disorder'
+        }
+        
+        # Look for keywords in the complaint
+        for keyword, condition in keyword_mappings.items():
+            if keyword in complaint_lower:
+                return condition
+        
+        # Extract first meaningful word if it looks medical
+        words = complaint_lower.split()
+        for word in words:
+            if len(word) > 3 and word not in ['and', 'with', 'the', 'for', 'from', 'patient', 'complains', 'of']:
+                # Capitalize first letter for better display
+                return f"{word.capitalize()} Condition"
+        
+        return None
     
     def _calculate_forecast_summary(self, historical_data: pd.Series,
                                   forecast_data: List[ForecastDataPoint],
