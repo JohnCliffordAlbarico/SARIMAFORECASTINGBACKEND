@@ -405,19 +405,26 @@ class SARIMAForecastingEngine:
             
             if forecast_type == ForecastType.DISEASE_TRENDS:
                 if predicted_total > 0:
-                    logger.info(f"Generating disease breakdown for {predicted_total} predicted cases on {forecast_date}")
+                    logger.info(f"🦠 Generating disease breakdown for {predicted_total} predicted cases on {forecast_date}")
                     # Scale up predictions if they're unrealistically low
                     scaled_total = max(predicted_total, 5) if predicted_total < 5 and predicted_total > 0 else predicted_total
                     if scaled_total != predicted_total:
-                        logger.info(f"Scaling prediction from {predicted_total} to {scaled_total} for better breakdown")
+                        logger.info(f"📈 Scaling prediction from {predicted_total} to {scaled_total} for better breakdown")
                     
                     disease_breakdown = self._generate_disease_breakdown_from_db(scaled_total)
                     metadata["disease_breakdown"] = disease_breakdown
-                    logger.info(f"Disease breakdown generated: {len(disease_breakdown.get('categories', []))} categories, {len(disease_breakdown.get('diseases', []))} diseases")
+                    logger.info(f"✅ Disease breakdown generated: {len(disease_breakdown.get('categories', []))} categories, {len(disease_breakdown.get('diseases', []))} diseases")
+                    
+                    # Debug: Log the actual breakdown structure
+                    if disease_breakdown.get('diseases') or disease_breakdown.get('categories'):
+                        logger.info(f"🔍 Sample diseases: {[d.get('disease_name', 'Unknown') for d in disease_breakdown.get('diseases', [])][:3]}")
+                        logger.info(f"🔍 Sample categories: {[c.get('category_name', 'Unknown') for c in disease_breakdown.get('categories', [])][:3]}")
+                    else:
+                        logger.warning(f"⚠️ Disease breakdown is empty - no diseases or categories found")
                 else:
                     # No cases predicted, no breakdown needed
                     metadata["disease_breakdown"] = {"diseases": [], "categories": []}
-                    logger.info("No cases predicted - empty disease breakdown")
+                    logger.info("⚪ No cases predicted - empty disease breakdown")
             else:
                 logger.info(f"Skipping disease breakdown - not a disease trends forecast")
             
@@ -500,100 +507,90 @@ class SARIMAForecastingEngine:
         if predicted_total <= 0:
             return {"diseases": [], "categories": []}
         
-        # Generate category predictions with proper math
+        # Generate disease predictions with proper proportional math
+        diseases = []
         categories = []
-        total_allocated = 0
         
-        # Sort categories by frequency to prioritize most common diseases
-        sorted_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
-        
-        for category_name, count in sorted_categories:
-            if count > 0 and total_allocated < predicted_total:
-                proportion = count / total_records
-                # Calculate cases but don't force minimum of 1
-                raw_predicted = predicted_total * proportion
-                predicted_cases = round(raw_predicted)
-                
-                # Ensure we don't exceed total
-                if total_allocated + predicted_cases > predicted_total:
-                    predicted_cases = predicted_total - total_allocated
-                
-                if predicted_cases > 0:
-                    total_allocated += predicted_cases
-                    
-                    # Get specific diseases for this category with correct math
-                    category_specific_diseases = []
-                    disease_allocated = 0
-                    
-                    if category_name in category_diseases:
-                        sorted_diseases = sorted(category_diseases[category_name].items(), key=lambda x: x[1], reverse=True)
-                        
-                        for disease, disease_count in sorted_diseases:
-                            if disease_allocated < predicted_cases:
-                                disease_proportion = disease_count / count
-                                raw_disease_cases = predicted_cases * disease_proportion
-                                disease_predicted_cases = round(raw_disease_cases)
-                                
-                                # Ensure we don't exceed category total
-                                if disease_allocated + disease_predicted_cases > predicted_cases:
-                                    disease_predicted_cases = predicted_cases - disease_allocated
-                                
-                                if disease_predicted_cases > 0:
-                                    disease_allocated += disease_predicted_cases
-                                    
-                                    category_specific_diseases.append({
-                                        "name": disease,
-                                        "cases": disease_predicted_cases,
-                                        "percentage": round((disease_predicted_cases / predicted_total) * 100, 1),
-                                        "category_percentage": round(disease_proportion * 100, 1),
-                                        "historical_count": disease_count
-                                    })
-                    
-                    categories.append({
-                        "name": category_name,
-                        "cases": predicted_cases,
-                        "percentage": round((predicted_cases / predicted_total) * 100, 1),
-                        "historical_count": count,
-                        "specific_diseases": category_specific_diseases[:3]  # Top 3 per category
-                    })
-        
-        # Generate top diseases overall with proper math
-        top_diseases = []
-        disease_total_allocated = 0
+        # Sort diseases by frequency to prioritize most common
         sorted_diseases = sorted(specific_disease_counts.items(), key=lambda x: x[1], reverse=True)
         
-        for disease, count in sorted_diseases[:5]:  # Only top 5 diseases
-            if count > 0 and disease_total_allocated < predicted_total:
-                proportion = count / total_records
-                raw_predicted = predicted_total * proportion
-                predicted_cases = round(raw_predicted)
-                
-                # Ensure we don't exceed total
-                if disease_total_allocated + predicted_cases > predicted_total:
-                    predicted_cases = predicted_total - disease_total_allocated
-                
-                if predicted_cases > 0:
-                    disease_total_allocated += predicted_cases
-                    
-                    top_diseases.append({
-                        "name": disease,
-                        "cases": predicted_cases,
-                        "percentage": round((predicted_cases / predicted_total) * 100, 1),
-                        "historical_count": count
-                    })
+        # Calculate proportional distribution for diseases
+        total_historical_cases = sum(specific_disease_counts.values())
+        if total_historical_cases == 0:
+            return {"diseases": [], "categories": []}
         
-        # Sort by case count (descending)
-        categories.sort(key=lambda x: x["cases"], reverse=True)
-        top_diseases.sort(key=lambda x: x["cases"], reverse=True)
+        remaining_cases = predicted_total
         
-        # Log the actual results for verification
-        logger.info(f"Disease breakdown results from {total_records} real medical records:")
-        logger.info(f"Top categories found: {[f'{cat['name']}: {cat['cases']} cases' for cat in categories[:3]]}")
-        logger.info(f"Top diseases found: {[f'{disease['name']}: {disease['cases']} cases' for disease in top_diseases[:5]]}")
+        # Distribute predicted cases proportionally among top diseases
+        for i, (disease_name, historical_count) in enumerate(sorted_diseases[:10]):  # Top 10 diseases
+            if remaining_cases <= 0:
+                break
+                
+            # Calculate proportion based on historical frequency
+            proportion = historical_count / total_historical_cases
+            
+            # For the last disease, assign all remaining cases to avoid rounding errors
+            if i == len(sorted_diseases[:10]) - 1 or i == 9:
+                predicted_cases = remaining_cases
+            else:
+                predicted_cases = max(0, round(predicted_total * proportion))
+                predicted_cases = min(predicted_cases, remaining_cases)
+            
+            if predicted_cases > 0:
+                diseases.append({
+                    "disease_name": disease_name,
+                    "predicted_cases": predicted_cases,
+                    "historical_frequency": historical_count,
+                    "confidence": min(0.95, 0.7 + (historical_count / total_historical_cases))
+                })
+                remaining_cases -= predicted_cases
+        
+        # Generate category breakdown
+        sorted_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
+        total_category_cases = sum(category_counts.values())
+        remaining_category_cases = predicted_total
+        
+        for i, (category_name, historical_count) in enumerate(sorted_categories[:8]):  # Top 8 categories
+            if remaining_category_cases <= 0:
+                break
+                
+            proportion = historical_count / total_category_cases
+            
+            # For the last category, assign all remaining cases
+            if i == len(sorted_categories[:8]) - 1 or i == 7:
+                predicted_cases = remaining_category_cases
+            else:
+                predicted_cases = max(0, round(predicted_total * proportion))
+                predicted_cases = min(predicted_cases, remaining_category_cases)
+            
+            if predicted_cases > 0:
+                categories.append({
+                    "category_name": category_name,
+                    "predicted_cases": predicted_cases,
+                    "historical_frequency": historical_count,
+                    "confidence": min(0.95, 0.7 + (historical_count / total_category_cases))
+                })
+                remaining_category_cases -= predicted_cases
+        
+        # Log the results for debugging
+        logger.info(f"✅ Generated {len(diseases)} diseases and {len(categories)} categories for {predicted_total} total cases")
+        
+        # Verify math is correct
+        total_disease_cases = sum(d['predicted_cases'] for d in diseases)
+        total_category_cases = sum(c['predicted_cases'] for c in categories)
+        logger.info(f"🔢 Math check - Diseases total: {total_disease_cases}, Categories total: {total_category_cases}, Predicted total: {predicted_total}")
         
         return {
+            "diseases": diseases,
             "categories": categories,
-            "diseases": top_diseases[:10]  # Top 10 specific diseases overall
+            "total_predicted": predicted_total,
+            "total_historical_records": total_records,
+            "data_quality": {
+                "disease_diversity": len(specific_disease_counts),
+                "category_diversity": len(category_counts),
+                "most_common_disease": sorted_diseases[0][0] if sorted_diseases else "None",
+                "most_common_category": sorted_categories[0][0] if sorted_categories else "None"
+            }
         }
     
     def _generate_disease_breakdown_from_db(self, predicted_total: float) -> Dict[str, Any]:
