@@ -406,10 +406,11 @@ class SARIMAForecastingEngine:
             if forecast_type == ForecastType.DISEASE_TRENDS:
                 if predicted_total > 0:
                     logger.info(f"🦠 Generating disease breakdown for {predicted_total} predicted cases on {forecast_date}")
-                    # Scale up predictions if they're unrealistically low
-                    scaled_total = max(predicted_total, 5) if predicted_total < 5 and predicted_total > 0 else predicted_total
+                    # Use actual SARIMA prediction without artificial scaling
+                    # Only scale if prediction is extremely low (< 1) to avoid empty breakdowns
+                    scaled_total = max(predicted_total, 1) if predicted_total < 1 else predicted_total
                     if scaled_total != predicted_total:
-                        logger.info(f"📈 Scaling prediction from {predicted_total} to {scaled_total} for better breakdown")
+                        logger.info(f"📈 Minimal scaling from {predicted_total} to {scaled_total} to avoid empty breakdown")
                     
                     disease_breakdown = self._generate_disease_breakdown_from_db(scaled_total)
                     metadata["disease_breakdown"] = disease_breakdown
