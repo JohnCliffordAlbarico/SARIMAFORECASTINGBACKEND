@@ -56,7 +56,7 @@ class SARIMAForecastingEngine:
             
             # Generate forecast data points
             forecast_data = self._create_forecast_datapoints(
-                sarima_result, time_aggregation, forecast_horizon
+                sarima_result, time_aggregation, forecast_horizon, forecast_type, data
             )
             
             # Calculate comprehensive summary
@@ -370,8 +370,10 @@ class SARIMAForecastingEngine:
     
     def _create_forecast_datapoints(self, sarima_result: Dict,
                                   time_aggregation: TimeAggregation,
-                                  forecast_horizon: int) -> List[ForecastDataPoint]:
-        """Create detailed forecast data points"""
+                                  forecast_horizon: int,
+                                  forecast_type: ForecastType = None,
+                                  raw_data: pd.DataFrame = None) -> List[ForecastDataPoint]:
+        """Create detailed forecast data points with disease breakdowns for disease trends"""
         
         forecast_data = []
         start_date = datetime.now().date()
@@ -390,23 +392,242 @@ class SARIMAForecastingEngine:
         
         for i in range(len(sarima_result['forecast'])):
             forecast_date = start_date + (date_increment * i)
+            predicted_total = float(sarima_result['forecast'][i])
+            
+            # Create base metadata
+            metadata = {
+                "aggregation": time_aggregation.value,
+                "model": "SARIMA",
+                "parameters": sarima_result.get('parameters_used', {})
+            }
+            
+            # Add disease breakdown for disease trends forecasts
+            if forecast_type == ForecastType.DISEASE_TRENDS and raw_data is not None:
+                disease_breakdown = self._generate_disease_breakdown(predicted_total, raw_data)
+                metadata["disease_breakdown"] = disease_breakdown
             
             forecast_data.append(ForecastDataPoint(
                 date=forecast_date.strftime("%Y-%m-%d"),
-                predicted_value=float(sarima_result['forecast'][i]),
+                predicted_value=predicted_total,
                 confidence_lower=float(sarima_result['confidence_intervals']['lower'][i]),
                 confidence_upper=float(sarima_result['confidence_intervals']['upper'][i]),
                 trend_component=None,  # Could be extracted from SARIMA decomposition
                 seasonal_component=None,  # Could be extracted from SARIMA decomposition
                 anomaly_score=0.0,
-                metadata={
-                    "aggregation": time_aggregation.value,
-                    "model": "SARIMA",
-                    "parameters": sarima_result.get('parameters_used', {})
-                }
+                metadata=metadata
             ))
         
         return forecast_data
+    
+    def _generate_disease_breakdown(self, predicted_total: float, raw_data: pd.DataFrame) -> Dict[str, Any]:
+        """Generate detailed disease breakdown with specific diseases and categories"""
+        
+        from ..services.disease_classifier import disease_classifier
+        
+        if len(raw_data) == 0:
+            return {"diseases": [], "categories": []}
+        
+        # Track both specific diseases and categories
+        specific_disease_counts = {}
+        category_counts = {}
+        category_diseases = {}  # Track which diseases belong to each category
+        total_records = len(raw_data)
+        
+        # Classify each medical record using the enhanced classifier
+        logger.info(f"Processing {total_records} medical records for disease breakdown")
+        
+        for _, row in raw_data.iterrows():
+            chief_complaint = str(row.get('chief_complaint', '')).strip()
+            management = str(row.get('management', '')).strip()
+            
+            if chief_complaint and chief_complaint.lower() != 'nan':
+                try:
+                    # Use the enhanced disease classifier
+                    classification = disease_classifier.classify_disease(
+                        chief_complaint=chief_complaint,
+                        management=management,
+                        patient_age=row.get('patient_age', 35)
+                    )
+                    
+                    category_name = classification.get('category_name', 'Other')
+                    
+                    # Count categories
+                    category_counts[category_name] = category_counts.get(category_name, 0) + 1
+                    
+                    # Extract specific disease from chief complaint
+                    specific_disease = self._extract_specific_disease(chief_complaint, category_name)
+                    specific_disease_counts[specific_disease] = specific_disease_counts.get(specific_disease, 0) + 1
+                    
+                    # Log actual data being processed (first 10 records for debugging)
+                    if len(specific_disease_counts) <= 10:
+                        logger.info(f"Real medical record: '{chief_complaint}' → Category: '{category_name}' → Disease: '{specific_disease}'")
+                    
+                    # Group diseases by category
+                    if category_name not in category_diseases:
+                        category_diseases[category_name] = {}
+                    category_diseases[category_name][specific_disease] = category_diseases[category_name].get(specific_disease, 0) + 1
+                    
+                except Exception as e:
+                    logger.warning(f"Disease classification failed for complaint '{chief_complaint}': {str(e)}")
+                    category_counts['Other'] = category_counts.get('Other', 0) + 1
+                    specific_disease_counts['Unspecified Condition'] = specific_disease_counts.get('Unspecified Condition', 0) + 1
+            else:
+                category_counts['Other'] = category_counts.get('Other', 0) + 1
+                specific_disease_counts['Unspecified Condition'] = specific_disease_counts.get('Unspecified Condition', 0) + 1
+        
+        # Generate category predictions with specific diseases
+        categories = []
+        for category_name, count in category_counts.items():
+            if count > 0:
+                proportion = count / total_records
+                predicted_cases = max(1, int(predicted_total * proportion))
+                
+                # Get specific diseases for this category
+                category_specific_diseases = []
+                if category_name in category_diseases:
+                    for disease, disease_count in category_diseases[category_name].items():
+                        disease_proportion = disease_count / count  # Proportion within category
+                        disease_predicted_cases = max(1, int(predicted_cases * disease_proportion))
+                        
+                        category_specific_diseases.append({
+                            "name": disease,
+                            "cases": disease_predicted_cases,
+                            "percentage": round((disease_predicted_cases / predicted_total) * 100, 1),
+                            "category_percentage": round(disease_proportion * 100, 1),
+                            "historical_count": disease_count
+                        })
+                
+                # Sort diseases within category by predicted cases
+                category_specific_diseases.sort(key=lambda x: x["cases"], reverse=True)
+                
+                categories.append({
+                    "name": category_name,
+                    "cases": predicted_cases,
+                    "percentage": round(proportion * 100, 1),
+                    "historical_count": count,
+                    "specific_diseases": category_specific_diseases[:5]  # Top 5 diseases per category
+                })
+        
+        # Generate top specific diseases overall
+        top_diseases = []
+        for disease, count in specific_disease_counts.items():
+            if count > 0:
+                proportion = count / total_records
+                predicted_cases = max(1, int(predicted_total * proportion))
+                
+                top_diseases.append({
+                    "name": disease,
+                    "cases": predicted_cases,
+                    "percentage": round(proportion * 100, 1),
+                    "historical_count": count
+                })
+        
+        # Sort by case count (descending)
+        categories.sort(key=lambda x: x["cases"], reverse=True)
+        top_diseases.sort(key=lambda x: x["cases"], reverse=True)
+        
+        # Log the actual results for verification
+        logger.info(f"Disease breakdown results from {total_records} real medical records:")
+        logger.info(f"Top categories found: {[f'{cat['name']}: {cat['cases']} cases' for cat in categories[:3]]}")
+        logger.info(f"Top diseases found: {[f'{disease['name']}: {disease['cases']} cases' for disease in top_diseases[:5]]}")
+        
+        return {
+            "categories": categories,
+            "diseases": top_diseases[:10]  # Top 10 specific diseases overall
+        }
+    
+    def _extract_specific_disease(self, chief_complaint: str, category: str) -> str:
+        """Extract specific disease name from chief complaint"""
+        
+        complaint_lower = chief_complaint.lower().strip()
+        
+        # Common specific disease patterns
+        disease_patterns = {
+            # Respiratory
+            'pneumonia': 'Pneumonia',
+            'asthma': 'Asthma',
+            'bronchitis': 'Bronchitis',
+            'flu': 'Influenza',
+            'cold': 'Common Cold',
+            'sinusitis': 'Sinusitis',
+            'pharyngitis': 'Pharyngitis',
+            'laryngitis': 'Laryngitis',
+            'tonsillitis': 'Tonsillitis',
+            
+            # Gastrointestinal
+            'gastritis': 'Gastritis',
+            'diarrhea': 'Diarrhea',
+            'constipation': 'Constipation',
+            'nausea': 'Nausea/Vomiting',
+            'vomiting': 'Nausea/Vomiting',
+            'abdominal pain': 'Abdominal Pain',
+            'stomach pain': 'Gastric Pain',
+            'heartburn': 'Gastroesophageal Reflux',
+            'ulcer': 'Peptic Ulcer',
+            
+            # Infectious
+            'urinary tract infection': 'Urinary Tract Infection',
+            'uti': 'Urinary Tract Infection',
+            'skin infection': 'Skin Infection',
+            'wound infection': 'Wound Infection',
+            'cellulitis': 'Cellulitis',
+            
+            # Cardiovascular
+            'hypertension': 'Hypertension',
+            'chest pain': 'Chest Pain',
+            'heart palpitation': 'Palpitations',
+            'high blood pressure': 'Hypertension',
+            
+            # Musculoskeletal
+            'back pain': 'Back Pain',
+            'joint pain': 'Joint Pain',
+            'arthritis': 'Arthritis',
+            'muscle pain': 'Myalgia',
+            'headache': 'Headache',
+            'migraine': 'Migraine',
+            
+            # Dermatological
+            'rash': 'Skin Rash',
+            'eczema': 'Eczema',
+            'dermatitis': 'Dermatitis',
+            'acne': 'Acne',
+            
+            # Neurological
+            'dizziness': 'Dizziness',
+            'vertigo': 'Vertigo',
+            'seizure': 'Seizure',
+            
+            # Endocrine
+            'diabetes': 'Diabetes Mellitus',
+            'thyroid': 'Thyroid Disorder',
+            
+            # General
+            'fever': 'Fever',
+            'fatigue': 'Fatigue',
+            'weakness': 'General Weakness'
+        }
+        
+        # Look for specific disease patterns
+        for pattern, disease_name in disease_patterns.items():
+            if pattern in complaint_lower:
+                return disease_name
+        
+        # If no specific pattern found, create a generic name based on category
+        category_defaults = {
+            'Upper Respiratory Infections': 'Upper Respiratory Infection',
+            'Lower Respiratory Infections': 'Lower Respiratory Infection',
+            'Acute Gastrointestinal': 'Gastrointestinal Disorder',
+            'Chronic Gastrointestinal': 'Chronic GI Condition',
+            'Viral Infections': 'Viral Infection',
+            'Bacterial Infections': 'Bacterial Infection',
+            'Cardiovascular': 'Cardiovascular Condition',
+            'Neurological': 'Neurological Condition',
+            'Dermatological': 'Skin Condition',
+            'Musculoskeletal Acute': 'Acute Musculoskeletal Pain',
+            'Musculoskeletal Chronic': 'Chronic Musculoskeletal Condition'
+        }
+        
+        return category_defaults.get(category, f"{category} Condition")
     
     def _calculate_forecast_summary(self, historical_data: pd.Series,
                                   forecast_data: List[ForecastDataPoint],
