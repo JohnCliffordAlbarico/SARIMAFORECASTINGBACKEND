@@ -20,7 +20,7 @@ class DataAggregationService:
     
     def __init__(self):
         self.cache = {}
-        self.cache_ttl = 3600  # 1 hour cache TTL
+        self.cache_ttl = 0  # Disable caching - retrain every 24hrs
     
     async def get_aggregated_patient_volume(self, 
                                           time_aggregation: TimeAggregation,
@@ -476,6 +476,10 @@ class DataAggregationService:
     def _is_cache_valid(self, cache_key: str) -> bool:
         """Check if cached data is still valid"""
         
+        # Caching disabled for 24hr retraining schedule
+        if self.cache_ttl == 0:
+            return False
+            
         if cache_key not in self.cache:
             return False
         
