@@ -539,9 +539,6 @@ class SARIMAForecastingEngine:
         # Sort diseases by frequency to prioritize most common
         sorted_diseases = sorted(specific_disease_counts.items(), key=lambda x: x[1], reverse=True)
         
-        # DEBUG: Show what diseases we have and their counts
-        logger.info(f"🔍 ALL DISEASES FOUND: {dict(specific_disease_counts)}")
-        logger.info(f"🔍 SORTED DISEASES (top 5): {sorted_diseases[:5]}")
         
         # Calculate proportional distribution for diseases
         total_historical_cases = sum(specific_disease_counts.values())
@@ -558,22 +555,17 @@ class SARIMAForecastingEngine:
             # Calculate proportion based purely on historical frequency from medical records
             proportion = historical_count / total_historical_cases
             
-            # DEBUG: Show calculation for each disease
-            logger.info(f"🧮 Disease #{i}: '{disease_name}' - Historical: {historical_count}, Proportion: {proportion:.3f}")
             
             # For predicted_total = 1, just give it to the most frequent disease (first in sorted list)
             if predicted_total == 1:
                 if i == 0:  # First (most frequent) disease gets the 1 case
                     predicted_cases = 1
-                    logger.info(f"🎯 SINGLE CASE - Most frequent disease '{disease_name}' gets 1 case")
                 else:
                     predicted_cases = 0  # All other diseases get 0
-                    logger.info(f"🎯 SINGLE CASE - '{disease_name}' gets 0 cases (not most frequent)")
             else:
                 # For multiple cases, use proportional distribution
                 if i == len(sorted_diseases[:10]) - 1 or i == 9:
                     predicted_cases = remaining_cases
-                    logger.info(f"🎯 LAST DISEASE - Assigning remaining {remaining_cases} cases to '{disease_name}'")
                 else:
                     # Use realistic decimal predictions - NO ROUNDING!
                     predicted_cases = max(0.0, predicted_total * proportion)
@@ -583,7 +575,6 @@ class SARIMAForecastingEngine:
                     if predicted_cases > 0:
                         variation = np.random.uniform(0.9, 1.1)
                         predicted_cases = predicted_cases * variation
-                    logger.info(f"🎯 CALCULATED - '{disease_name}' gets {predicted_cases} cases")
             
             if predicted_cases > 0:
                 diseases.append({
@@ -592,8 +583,6 @@ class SARIMAForecastingEngine:
                     "historical_frequency": historical_count,
                     "confidence": min(0.95, 0.7 + (historical_count / total_historical_cases))
                 })
-                # EXPLICIT logging to see what disease names are being returned
-                logger.info(f"🎯 FINAL DISEASE OUTPUT: '{disease_name}' with {predicted_cases} cases")
                 remaining_cases -= predicted_cases
         
         # Generate category breakdown
@@ -679,9 +668,6 @@ class SARIMAForecastingEngine:
                 if null_count > 0 or empty_count > 0:
                     logger.warning(f"Data quality issue: {null_count} null complaints, {empty_count} empty complaints out of {len(df)} total records")
                 
-                # Show sample of actual chief complaints from your database
-                valid_complaints = df[df['chief_complaint'].notna() & (df['chief_complaint'] != '')]['chief_complaint'].unique()[:10]
-                logger.info(f"Sample chief complaints from your medical records: {list(valid_complaints)}")
             else:
                 logger.warning("No chief_complaint column found in medical records!")
                 logger.info(f"Available columns: {df.columns.tolist() if not df.empty else 'No data'}")
