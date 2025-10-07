@@ -548,7 +548,7 @@ class SARIMAForecastingEngine:
         remaining_cases = predicted_total
         
         # Distribute predicted cases proportionally based purely on historical medical record frequency
-        for i, (disease_name, historical_count) in enumerate(sorted_diseases[:10]):  # Top 10 diseases
+        for i, (disease_name, historical_count) in enumerate(sorted_diseases):  # Show all diseases with sufficient data
             if remaining_cases <= 0:
                 break
                 
@@ -564,17 +564,12 @@ class SARIMAForecastingEngine:
                     predicted_cases = 0  # All other diseases get 0
             else:
                 # For multiple cases, use proportional distribution
-                if i == len(sorted_diseases[:10]) - 1 or i == 9:
+                if i == len(sorted_diseases) - 1:  # Last disease gets remaining cases
                     predicted_cases = remaining_cases
                 else:
                     # Use realistic decimal predictions - NO ROUNDING!
                     predicted_cases = max(0.0, predicted_total * proportion)
                     predicted_cases = min(predicted_cases, remaining_cases)
-                    
-                    # Add small random variation to make predictions realistic
-                    if predicted_cases > 0:
-                        variation = np.random.uniform(0.9, 1.1)
-                        predicted_cases = predicted_cases * variation
             
             if predicted_cases > 0:
                 diseases.append({
